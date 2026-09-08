@@ -570,6 +570,7 @@ def do_start_update(data: np.ndarray, size: np.ndarray, comm: Optional[MPI.Comm]
 
 
 def rebuild_data_linked(source_schema):
+    """Attach MPI link-coordinate updates to a structure source schema."""
     if (
         source_schema.type == io.schema.FileEntry.LIGHTCONE
         and "data" not in source_schema.children

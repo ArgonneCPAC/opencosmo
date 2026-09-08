@@ -144,10 +144,13 @@ def cleanup_mpi(comm_world: MPI.Comm, comm_write: MPI.Comm, group_write: MPI.Gro
 
 def sync_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
     from opencosmo.collection.simulation.io import resort_simulation_collection_mpi
+    from opencosmo.collection.structure.io import rebuild_data_linked
 
     schema = sync_uuids(schema, comm, {})
     if schema.type == FileEntry.SIMULATION_COLLECTION:
         schema = resort_simulation_collection_mpi(schema, comm)
+    elif schema.type == FileEntry.STRUCTURE_COLLECTION:
+        schema = rebuild_data_linked(schema)
     return verify_schemas(schema, comm)
 
 

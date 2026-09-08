@@ -1727,7 +1727,7 @@ class StructureCollection:
         )
 
         source_schema = self.__source.make_schema(**schema_kwargs)
-        children[source_name] = sio.rebuild_data_linked(source_schema)
+        children[source_name] = source_schema
 
         for name, dataset in datasets.items():
             if name == "galaxies":

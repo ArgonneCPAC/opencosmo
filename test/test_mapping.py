@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 import opencosmo.collection.simulation.io as simulation_io
 import opencosmo.collection.simulation.simulation as simulation_module
+import opencosmo.mapping.write as mapping_write
 import pytest
 from opencosmo.io.schema import FileEntry, MapCoordinateState, make_schema
 from opencosmo.io.serial import allocate
@@ -852,22 +853,22 @@ def test_lowered_mapping_schema_is_accepted_by_generic_verification():
 
 
 def test_lower_primary_mapping_preserves_unmatched_and_missing_targets():
-    writer = simulation_io.ColumnWriter.from_numpy_array(np.array([8, -1, 3, 99]))
+    writer = mapping_write.ColumnWriter.from_numpy_array(np.array([8, -1, 3, 99]))
 
-    lowered = simulation_io.__lower_primary_writer(writer, {3: 0, 8: 1})
+    lowered = mapping_write.__lower_primary_writer(writer, {3: 0, 8: 1})
 
     np.testing.assert_array_equal(lowered.data, [1, -1, 0, -1])
 
 
 def test_lower_auxiliary_mapping_filters_and_sorts_pairs():
-    source = simulation_io.ColumnWriter.from_numpy_array(
+    source = mapping_write.ColumnWriter.from_numpy_array(
         np.array([20, 10, 20, 99]), attrs={"source": "attribute"}
     )
-    target = simulation_io.ColumnWriter.from_numpy_array(
+    target = mapping_write.ColumnWriter.from_numpy_array(
         np.array([7, 9, 8, 7]), attrs={"target": "attribute"}
     )
 
-    lowered_source, lowered_target = simulation_io.__lower_auxiliary_writers(
+    lowered_source, lowered_target = mapping_write.__lower_auxiliary_writers(
         source, target, {10: 0, 20: 1}, {7: 1, 8: 0}
     )
 
@@ -879,7 +880,7 @@ def test_lower_auxiliary_mapping_filters_and_sorts_pairs():
 
 def test_lower_mapping_rejects_duplicate_raw_ids():
     with pytest.raises(ValueError, match="duplicate output raw row IDs"):
-        simulation_io.__make_output_position_lookup(np.array([3, 1, 3]))
+        mapping_write.__make_output_position_lookup(np.array([3, 1, 3]))
 
 
 def test_mpi_dataset_output_plan_is_stable_and_balanced():
