@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import partial
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Iterable, Optional, TypeGuard
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, TypeGuard
 
 import numpy as np
 
@@ -11,14 +11,23 @@ from opencosmo import dataset as d
 from opencosmo import io
 from opencosmo.collection.lightcone import lightcone as lc
 from opencosmo.collection.structure import structure as sc
-from opencosmo.collection.structure.handler import make_links
+from opencosmo.collection.structure.handler import (
+    LINK_ALIASES,
+    LinkHandler,
+    link_slot_values,
+)
 from opencosmo.io.index_spec import index_spec_for
+from opencosmo.mapping.read import read_link_set
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     import h5py
     from mpi4py import MPI
 
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.discover import LinkLayout
+    from opencosmo.io.iopen import DatasetTarget, FileTarget
+    from opencosmo.mapping.mapping import DatasetMatchSet
 
 ALLOWED_LINKS = {  # h5py.Files that can serve as a link holder and
     "halo_properties": ["halo_particles", "halo_profiles", "galaxy_properties"],
@@ -26,7 +35,120 @@ ALLOWED_LINKS = {  # h5py.Files that can serve as a link holder and
 }
 
 
-def remove_empty(dataset, opened_datasets: Optional[Iterable[str]] = None):
+def resolve_link_targets(
+    layout: LinkLayout,
+    targets: Mapping[str, d.Dataset | sc.StructureCollection],
+) -> tuple[dict[str, UUID], dict[str, UUID]]:
+    """Resolve on-disk link prefixes against opened targets.
+
+    Returns ``(prefix_to_uuid, name_to_uuid)``: the first keyed by on-disk link
+    prefix for ``read_link_set``, the second by collection-facing name for
+    ``DatasetMatchSet.with_aliases``.
+    """
+    prefix_to_uuid: dict[str, UUID] = {}
+    name_to_uuid: dict[str, UUID] = {}
+    for slot in layout.slots:
+        name = LINK_ALIASES[slot.prefix]
+        # ``targets`` is keyed the way StructureCollection will key it, so a
+        # nested galaxy collection appears as "galaxies" rather than
+        # "galaxy_properties". Follow that rename when it applies.
+        if name == "galaxy_properties" and name not in targets:
+            name = "galaxies"
+        target = targets.get(name)
+        if target is None:
+            continue
+        if isinstance(target, sc.StructureCollection):
+            target = target[str(target.header.file.data_type)]
+        assert isinstance(target, d.Dataset)
+        prefix_to_uuid[slot.prefix] = target.uuid
+        name_to_uuid[name] = target.uuid
+    return prefix_to_uuid, name_to_uuid
+
+
+def build_match_sets(
+    source_target: DatasetTarget,
+    source: d.Dataset,
+    targets: Mapping[str, d.Dataset | sc.StructureCollection],
+) -> dict[UUID, DatasetMatchSet]:
+    """Build the resolved link match set for one properties source dataset."""
+    layout = source_target["link_layout"]
+    if layout is None or "data_linked" not in source_target["dataset_group"]:
+        return {}
+    prefix_to_uuid, name_to_uuid = resolve_link_targets(layout, targets)
+    match_set = read_link_set(
+        source_target["dataset_group"]["data_linked"],
+        layout,
+        source_target["uuid"],
+        prefix_to_uuid,
+    )
+    if match_set is None:
+        return {}
+    return {source.uuid: match_set.with_aliases(name_to_uuid)}
+
+
+def __with_galaxies_alias[T](targets: Mapping[str, T]) -> dict[str, T]:
+    """Key nested galaxy collections as "galaxies", mirroring StructureCollection.
+
+    ``StructureCollection.__init__`` renames ``galaxy_properties`` to ``galaxies``
+    only when the target is a nested collection. Link aliases must agree, or the
+    handler cannot resolve the link by name.
+    """
+    resolved = dict(targets)
+    if isinstance(resolved.get("galaxy_properties"), sc.StructureCollection):
+        resolved["galaxies"] = resolved.pop("galaxy_properties")
+    return resolved
+
+
+def __step_targets(
+    targets: Mapping[str, d.Dataset | lc.Lightcone | sc.StructureCollection],
+    step: int,
+) -> dict[str, d.Dataset | sc.StructureCollection]:
+    resolved: dict[str, d.Dataset | sc.StructureCollection] = {}
+    for name, target in __with_galaxies_alias(targets).items():
+        if isinstance(target, lc.Lightcone):
+            resolved[name] = target[step]
+        elif isinstance(target, sc.StructureCollection):
+            source = target[str(target.header.file.data_type)]
+            if isinstance(source, lc.Lightcone):
+                resolved[name] = source[step]
+            else:
+                resolved[name] = target
+        else:
+            resolved[name] = target
+    return resolved
+
+
+def __build_lightcone_match_sets(
+    source_targets: Iterable[DatasetTarget],
+    source_datasets: Iterable[d.Dataset],
+    targets: Mapping[str, d.Dataset | lc.Lightcone | sc.StructureCollection],
+) -> dict[UUID, DatasetMatchSet]:
+    sources = tuple(source_datasets)
+    targets_by_step = {
+        step: __step_targets(targets, step)
+        for step in {
+            ds.header.file.step for ds in sources if ds.header.file.step is not None
+        }
+    }
+    match_sets: dict[UUID, DatasetMatchSet] = {}
+    for source_target, source in zip(source_targets, sources, strict=True):
+        step = source.header.file.step
+        assert step is not None
+        match_sets.update(
+            build_match_sets(
+                source_target,
+                source,
+                targets_by_step[step],
+            )
+        )
+    return match_sets
+
+
+def remove_empty(
+    dataset: d.Dataset | lc.Lightcone,
+    match_sets: dict[UUID, DatasetMatchSet],
+    opened_datasets: Optional[Iterable[str]] = None,
+) -> d.Dataset | lc.Lightcone:
     """
     Drop structures that are empty in the linked datasets that were actually
     opened. When a user opens, say, particles and profiles together, they should
@@ -39,8 +161,7 @@ def remove_empty(dataset, opened_datasets: Optional[Iterable[str]] = None):
     galaxy or particle links), so restricting to opened datasets avoids dropping
     structures based on links the user never asked for.
     """
-    metadata = dataset.get_metadata()
-    _, columns_by_dataset = make_links(metadata.keys(), rename_galaxies=True)
+    names = {name for match_set in match_sets.values() for name in match_set.aliases}
 
     if opened_datasets is not None:
         # A nested galaxy collection is exposed as "galaxies" but keyed as
@@ -49,21 +170,15 @@ def remove_empty(dataset, opened_datasets: Optional[Iterable[str]] = None):
             "galaxies" if name == "galaxy_properties" else name
             for name in opened_datasets
         }
-        columns_by_dataset = {
-            name: cols for name, cols in columns_by_dataset.items() if name in opened
-        }
+        names &= opened
 
-    relevant_columns = [col for cols in columns_by_dataset.values() for col in cols]
-    if not relevant_columns:
+    if not names:
         return dataset
 
     mask = np.ones(len(dataset), dtype=bool)
-    for name in relevant_columns:
-        col = metadata[name]
-        if "size" in name:
-            mask &= col != 0
-        elif "idx" in name:
-            mask &= col != -1
+    for name in sorted(names):
+        values, is_chunked = link_slot_values(match_sets, dataset, name)
+        mask &= values != 0 if is_chunked else values != -1
 
     if not mask.all():
         dataset = dataset.take_rows(np.where(mask)[0])
@@ -250,17 +365,32 @@ def build_lightcone_structure_collection(
             galaxy_target_datasets[target_type] = lc.Lightcone.from_datasets(
                 {ds.header.file.step: ds for ds in targets}  # type: ignore
             )
+        galaxy_match_sets = __build_lightcone_match_sets(
+            link_sources["galaxy_properties"],
+            galaxy_datasets,
+            galaxy_target_datasets,
+        )
         if len(link_sources.get("halo_properties", [])) > 0:
             collection = sc.StructureCollection(
-                galaxy_lightcone, galaxy_target_datasets
+                galaxy_lightcone,
+                galaxy_target_datasets,
+                False,
+                LinkHandler(galaxy_match_sets, None),
+                resolve_links=True,
             )
             link_targets["halo_properties"]["galaxy_properties"] = collection  # type: ignore[assignment]
         else:
             if ignore_empty:
                 galaxy_lightcone = remove_empty(
-                    galaxy_lightcone, galaxy_target_datasets.keys()
+                    galaxy_lightcone, galaxy_match_sets, galaxy_target_datasets.keys()
                 )
-            return sc.StructureCollection(galaxy_lightcone, galaxy_target_datasets)
+            return sc.StructureCollection(
+                galaxy_lightcone,
+                galaxy_target_datasets,
+                False,
+                LinkHandler(galaxy_match_sets, None),
+                resolve_links=True,
+            )
 
     elif (
         len(link_sources.get("halo_properties", [])) > 0
@@ -308,9 +438,22 @@ def build_lightcone_structure_collection(
             output_targets_of_type[linked_ds.header.file.step] = linked_ds
 
         output_targets[target_type] = lc.Lightcone.from_datasets(output_targets_of_type)
+    halo_match_sets = __build_lightcone_match_sets(
+        halo_source_list,
+        halo_datasets,
+        __with_galaxies_alias(output_targets),
+    )
     if ignore_empty:
-        source_lightcone = remove_empty(source_lightcone, output_targets.keys())
-    return sc.StructureCollection(source_lightcone, output_targets)
+        source_lightcone = remove_empty(
+            source_lightcone, halo_match_sets, output_targets.keys()
+        )
+    return sc.StructureCollection(
+        source_lightcone,
+        output_targets,
+        False,
+        LinkHandler(halo_match_sets, None),
+        resolve_links=True,
+    )
 
 
 def __build_structure_collection(
@@ -330,13 +473,25 @@ def __build_structure_collection(
             ),
             metadata_group="data_linked",
         )
+        galaxy_match_sets = build_match_sets(
+            galaxy_properties_target,
+            source_dataset,
+            link_targets["galaxy_properties"],
+        )
         if ignore_empty and halo_properties_target is None:
-            source_dataset = remove_empty(
-                source_dataset, link_targets["galaxy_properties"].keys()
+            filtered_dataset = remove_empty(
+                source_dataset,
+                galaxy_match_sets,
+                link_targets["galaxy_properties"].keys(),
             )
+            assert isinstance(filtered_dataset, d.Dataset)
+            source_dataset = filtered_dataset
         collection = sc.StructureCollection(
             source_dataset,
             link_targets["galaxy_properties"],
+            False,
+            LinkHandler(galaxy_match_sets, None),
+            resolve_links=True,
         )
         if halo_properties_target is not None:
             link_targets["halo_properties"]["galaxy_properties"] = collection
@@ -361,14 +516,26 @@ def __build_structure_collection(
             index_spec_for(index_kind, is_empty_ref, is_source=True),
             metadata_group="data_linked",
         )
+        halo_match_sets = build_match_sets(
+            halo_properties_target,
+            source_dataset,
+            __with_galaxies_alias(link_targets["halo_properties"]),
+        )
         if ignore_empty:
-            source_dataset = remove_empty(
-                source_dataset, link_targets["halo_properties"].keys()
+            filtered_dataset = remove_empty(
+                source_dataset,
+                halo_match_sets,
+                link_targets["halo_properties"].keys(),
             )
+            assert isinstance(filtered_dataset, d.Dataset)
+            source_dataset = filtered_dataset
 
         return sc.StructureCollection(
             source_dataset,
             link_targets["halo_properties"],
+            False,
+            LinkHandler(halo_match_sets, None),
+            resolve_links=True,
         )
 
 

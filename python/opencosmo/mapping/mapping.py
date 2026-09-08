@@ -541,6 +541,11 @@ def get_slot_sizes(
     return get_data(slot.size, index).astype(np.int64)
 
 
+def is_chunked_slot(match_set: DatasetMatchSet, target: UUID) -> bool:
+    """Return whether ``target``'s primary slot is a start/size pair."""
+    return isinstance(match_set.primary_maps[target], ChunkedSlot)
+
+
 def rebuild_target_index(
     match_set: DatasetMatchSet,
     target_uuid: UUID,

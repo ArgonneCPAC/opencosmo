@@ -350,6 +350,7 @@ def build_from_assignment(
                 dataset_group=f[group.path],
                 columns=columns_list,
                 spatial_index=f[index_path] if group.has_index else None,
+                link_layout=group.link_layout,
             )
 
             # load/if conditions legitimately filter datasets out at open time,

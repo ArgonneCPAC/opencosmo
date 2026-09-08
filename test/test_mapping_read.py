@@ -6,10 +6,6 @@ from uuid import UUID
 import h5py
 import numpy as np
 import pytest
-from opencosmo.collection.structure.handler import (
-    rebuild_chunk_index,
-    rebuild_row_index,
-)
 from opencosmo.io.discover import (
     LinkSlotKind,
     _read_link_layout,
@@ -44,6 +40,34 @@ _REF = UUID("00000000-0000-0000-0000-000000000001")
 _A = UUID("00000000-0000-0000-0000-000000000002")
 _B = UUID("00000000-0000-0000-0000-000000000003")
 _C = UUID("00000000-0000-0000-0000-000000000004")
+
+
+# Frozen copies of the pre-migration index rebuilders that used to live in
+# collection/structure/handler.py. They are the oracle that rebuild_target_index
+# must keep agreeing with, so they are pinned here rather than imported.
+def rebuild_row_index(
+    original_metadata_column: np.ndarray,
+    index_into_original: np.ndarray,
+) -> np.ndarray:
+    valid_rows = original_metadata_column >= 0
+    index = np.full(len(original_metadata_column), -1, dtype=np.int64)
+    index[valid_rows] = np.arange(0, sum(valid_rows))
+    index_to_take = index[index_into_original]
+    return index_to_take[index_to_take >= 0]
+
+
+def rebuild_chunk_index(
+    original_size_column: np.ndarray,
+    index_into_original: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    chunk_boundaries = np.zeros(len(original_size_column) + 1, dtype=np.int64)
+    _ = np.cumsum(original_size_column, out=chunk_boundaries[1:])
+    valid_rows = original_size_column[index_into_original] > 0
+
+    starts = chunk_boundaries[index_into_original[valid_rows]]
+    sizes = original_size_column[index_into_original[valid_rows]]
+
+    return coalesce_chunks(starts, sizes)
 
 
 def _make_chunked_match_set(file: h5py.File, sizes: np.ndarray) -> DatasetMatchSet:

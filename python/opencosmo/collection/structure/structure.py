@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from functools import reduce, wraps
+from functools import wraps
 from inspect import signature
 from typing import (
     TYPE_CHECKING,
@@ -25,10 +25,9 @@ from opencosmo.collection.structure import io as sio
 from opencosmo.column.column import DerivedScalarValue
 from opencosmo.column.select import do_multi_dataset_drops, do_multi_dataset_selections
 from opencosmo.dataset.formats import verify_format
-from opencosmo.index.unary import get_length
 from opencosmo.io.schema import FileEntry, make_schema
 
-from .handler import LinkHandler
+from .handler import LinkHandler, link_slot_values
 
 if TYPE_CHECKING:
     import astropy.units as u
@@ -114,6 +113,8 @@ class StructureCollection:
         hide_source: bool = False,
         link_handler: Optional[LinkHandler] = None,
         derived_columns: Optional[set[str]] = None,
+        *,
+        resolve_links: bool = False,
         **kwargs,
     ):
         """
@@ -127,14 +128,16 @@ class StructureCollection:
             self.__datasets["galaxies"] = self.__datasets.pop("galaxy_properties")
 
         if link_handler is None:
-            self.__handler = LinkHandler.from_link_names(
-                self.__source.meta_columns, "galaxies" in self.__datasets
+            raise ValueError("Structure collections require a link handler")
+        self.__handler = link_handler
+        if resolve_links:
+            self.__datasets = cast(
+                "dict[str, oc.Dataset | StructureCollection]",
+                self.__handler.prep_datasets(
+                    self.__source,
+                    cast("dict[str, oc.Dataset | lc.Lightcone]", self.__datasets),
+                ),
             )
-            self.__datasets = self.__handler.prep_datasets(
-                self.__source, self.__datasets
-            )
-        else:
-            self.__handler = link_handler
 
         if derived_columns is None:
             derived_columns = set()
@@ -146,14 +149,10 @@ class StructureCollection:
         get them through this method, which ensures all the rebuilding is
         done when necessary.
         """
-        if self.__handler is None:
-            return self.__datasets
         self.__datasets = self.__handler.rebuild_datasets(
             self.__source, self.__datasets
         )
-        self.__handler = LinkHandler.from_link_names(
-            self.__source.meta_columns, "galaxies" in self.__datasets
-        )
+        self.__handler = LinkHandler(self.__handler.match_sets, None)
         return self.__datasets
 
     def __leaf_datasets(
@@ -1587,10 +1586,12 @@ class StructureCollection:
             warn("Tried to iterate over a collection with no structures in it!")
             return
 
-        metadata_columns: list[str] = reduce(
-            lambda acc, key: acc + self.__handler.columns[key], data_types, []
-        )
         datasets = self.__get_datasets()
+        link_values = {
+            name: link_slot_values(self.__handler.match_sets, self.__source, name)
+            for name in data_types
+            if name in self.__handler.names
+        }
         rs = {name: 0 for name in self.__datasets.keys()}
 
         columns_to_collect: dict[str, dict[str, list[np.ndarray]]] = defaultdict(dict)
@@ -1598,12 +1599,13 @@ class StructureCollection:
             name_parts = column.split(".")
             columns_to_collect[name_parts[0]][name_parts[1]] = []
         try:
-            for row in self.__source.rows(metadata_columns=metadata_columns):
+            for i, row in enumerate(self.__source.rows()):
                 row = dict(row)
-                links = self.__handler.parse(row)
                 output = {}
-                for name, index in links.items():
-                    ilength = get_length(index)
+                for name, (values, is_chunked) in link_values.items():
+                    ilength = int(values[i]) if is_chunked else int(values[i] >= 0)
+                    if ilength == 0:
+                        continue
                     output[name] = datasets[name].take_range(
                         rs[name], rs[name] + ilength
                     )

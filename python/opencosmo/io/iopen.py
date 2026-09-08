@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import h5py
 
     from opencosmo.header import OpenCosmoHeader
-    from opencosmo.io.discover import FileLayout
+    from opencosmo.io.discover import FileLayout, LinkLayout
     from opencosmo.io.index_spec import IndexSpec
     from opencosmo.io.io import MpiMode
     from opencosmo.mapping.mapping import DatasetMatchSet
@@ -59,6 +59,7 @@ class DatasetTarget(TypedDict):
     dataset_group: h5py.Group
     columns: list[h5py.Dataset]
     spatial_index: Optional[h5py.Group]
+    link_layout: Optional[LinkLayout]
 
 
 class FileType(Enum):
