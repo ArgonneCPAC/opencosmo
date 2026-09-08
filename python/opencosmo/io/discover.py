@@ -568,9 +568,7 @@ def discover_file(path: Path) -> FileLayout:
                         except ValueError as e:
                             return FileLayout(path=path, groups=(), error=str(e))
                         linked_target_names_set.update(
-                            slot.prefix
-                            for slot in link_layout.slots
-                            if slot.kind is LinkSlotKind.CHUNKED
+                            slot.prefix for slot in link_layout.slots
                         )
 
                 linked_target_names = tuple(sorted(linked_target_names_set))

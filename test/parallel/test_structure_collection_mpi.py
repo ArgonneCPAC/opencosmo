@@ -201,7 +201,6 @@ def test_write_lightcone_structure_combinations(
 
     output = per_test_dir / "collection.hdf5"
     oc.write(output, collection)
-    print("DONE WRITING")
     reopened = oc.open(output)
 
     assert isinstance(reopened, oc.StructureCollection)

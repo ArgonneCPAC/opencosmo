@@ -10,7 +10,10 @@ from opencosmo.collection.structure import structure as sc
 from opencosmo.dataset import dataset as ocds
 from opencosmo.index import coalesce_chunks, into_array, offset
 from opencosmo.index.build import empty
+from opencosmo.io.schema import FileEntry, make_schema
+from opencosmo.io.writer import ColumnWriter
 from opencosmo.mapping.mapping import (
+    ChunkedSlot,
     get_mapping,
     get_slot_sizes,
     is_chunked_slot,
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
 
     import opencosmo as oc
     from opencosmo.index import DataIndex
+    from opencosmo.io.schema import Schema
     from opencosmo.mapping.mapping import DatasetMatchSet
 
 
@@ -280,6 +284,49 @@ class LinkHandler:
     def match_set_for(self, source: oc.Dataset) -> DatasetMatchSet:
         """Return the match set owning ``source``'s links."""
         return self.match_sets[source.uuid]
+
+    def make_schema(
+        self, source: oc.Dataset | oc.Lightcone, source_schema: Schema
+    ) -> Schema:
+        """Add source-row-aligned link datasets to a structure source schema."""
+        if isinstance(source, ocds.Dataset):
+            return source_schema._replace(
+                children=source_schema.children
+                | {"data_linked": self.__make_link_schema(source)}
+            )
+
+        children = dict(source_schema.children)
+        for step, step_source in source.items():
+            child_names = [name for name in children if name.startswith(f"{step}_")]
+            if len(child_names) != 1:
+                raise RuntimeError(
+                    f"Unable to find source schema for lightcone step '{step}'"
+                )
+            child_name = child_names[0]
+            step_schema = children[child_name]
+            children[child_name] = step_schema._replace(
+                children=step_schema.children
+                | {"data_linked": self.__make_link_schema(step_source)}
+            )
+        return source_schema._replace(children=children)
+
+    def __make_link_schema(self, source: oc.Dataset) -> Schema:
+        match_set = self.match_set_for(source)
+        columns = {}
+        for slot in match_set.primary_maps.values():
+            datasets = (
+                (slot.start, slot.size) if isinstance(slot, ChunkedSlot) else (slot,)
+            )
+            for dataset in datasets:
+                name = dataset.name.rsplit("/", maxsplit=1)[-1]
+                columns[name] = ColumnWriter.from_h5_dataset(
+                    dataset, source.index, attrs=dict(dataset.attrs)
+                )
+        return make_schema(
+            "data_linked",
+            FileEntry.COLUMNS,
+            columns={name: columns[name] for name in sorted(columns)},
+        )
 
     @property
     def names(self) -> tuple[str, ...]:

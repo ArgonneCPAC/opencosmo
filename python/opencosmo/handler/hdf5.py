@@ -3,7 +3,6 @@ from __future__ import annotations
 from functools import cached_property
 from typing import TYPE_CHECKING, Iterable, Optional
 
-import h5py
 import numpy as np
 from opencosmo.io.schema import FileEntry, make_schema
 from opencosmo.io.writer import (
@@ -23,6 +22,7 @@ from opencosmo.index import (
 if TYPE_CHECKING:
     from uuid import UUID
 
+    import h5py
     from opencosmo.io.schema import Schema
 
     from opencosmo.index import DataIndex
@@ -136,7 +136,7 @@ class Hdf5Handler:
     def make_schema(
         self,
         columns: Iterable[str],
-    ) -> tuple[Schema, Schema]:
+    ) -> Schema:
         columns = set(columns)
         data_writers = {}
         for column_name in columns:
@@ -146,33 +146,7 @@ class Hdf5Handler:
             )
         data_schema = make_schema("data", FileEntry.COLUMNS, columns=data_writers)
 
-        return data_schema, self.__link_schema()
-
-    def __link_schema(self) -> Schema:
-        """Carry an on-disk /data_linked group (structure links) through a write.
-
-        Structure-collection properties files store per-structure link
-        coordinates in a /data_linked group beside /data. Those arrays are the
-        same length as /data, so they are sliced to the write index exactly like
-        data columns and re-emitted verbatim; their raw target rows are lowered
-        to output positions later, in ``opencosmo.mapping.write``.
-        """
-        if not self.__columns:
-            return make_schema("data_linked", FileEntry.EMPTY)
-        parent = next(iter(self.__columns.values())).parent.parent
-        link_group = parent.get("data_linked") if parent is not None else None
-        if not isinstance(link_group, h5py.Group):
-            return make_schema("data_linked", FileEntry.EMPTY)
-        writers = {
-            name: ColumnWriter.from_h5_dataset(
-                link_group[name], self.__index, attrs=dict(link_group[name].attrs)
-            )
-            for name in link_group
-            if isinstance(link_group[name], h5py.Dataset)
-        }
-        if not writers:
-            return make_schema("data_linked", FileEntry.EMPTY)
-        return make_schema("data_linked", FileEntry.COLUMNS, columns=writers)
+        return data_schema
 
     def get_data(self, columns: Iterable[str]) -> dict[str, np.ndarray]:
         """ """

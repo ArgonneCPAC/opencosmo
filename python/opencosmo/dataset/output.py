@@ -84,7 +84,7 @@ def make_dataset_schema(
     columns = set(columns_to_uuid.keys())
     # header = header.with_region(region)
     raw_columns = columns.intersection(raw_data_handler.columns)
-    data_schema, link_schema = raw_data_handler.make_schema(raw_columns)
+    data_schema = raw_data_handler.make_schema(raw_columns)
 
     cached_data_schema = cache.make_schema(columns_to_uuid)
 
@@ -108,8 +108,6 @@ def make_dataset_schema(
     data_schema = data_schema._replace(attributes=new_attributes)
 
     children = {"data": data_schema}
-    if link_schema.type != FileEntry.EMPTY:
-        children[link_schema.name] = link_schema
     if name is None:
         name = ""
 

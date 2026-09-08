@@ -22,6 +22,7 @@ import opencosmo as oc
 from opencosmo.collection.lightcone import lightcone as lc
 from opencosmo.collection.structure import evaluate
 from opencosmo.collection.structure import io as sio
+from opencosmo.collection.structure.io import rebuild_data_linked
 from opencosmo.column.column import DerivedScalarValue
 from opencosmo.column.select import do_multi_dataset_drops, do_multi_dataset_selections
 from opencosmo.dataset.formats import verify_format
@@ -1727,7 +1728,9 @@ class StructureCollection:
         )
 
         source_schema = self.__source.make_schema(**schema_kwargs)
-        children[source_name] = source_schema
+        if len(self.__source) > 0:
+            source_schema = self.__handler.make_schema(self.__source, source_schema)
+            children[source_name] = rebuild_data_linked(source_schema)
 
         for name, dataset in datasets.items():
             if name == "galaxies":

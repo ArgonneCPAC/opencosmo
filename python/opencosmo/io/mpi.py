@@ -89,20 +89,18 @@ def write_parallel(file: Path, file_schema: Schema):
     if len(paths) != 1:
         raise ValueError("Different ranks recieved a different path to output to!")
 
-    try:
-        verify_structure(
-            file_schema, allow_unresolved_maps=True
-        )  # Tier 1: structural correctness
-        # Tier 2: does this rank actually contribute any rows?
-        state = (
-            CombineState.VALID
-            if schema_data_length(file_schema) > 0
-            else CombineState.ZERO_LENGTH
-        )
-        results = comm.allgather(state)
-    except ValueError:
-        results = comm.allgather(CombineState.INVALID)
-        raise
+    if schema_data_length(file_schema) == 0:
+        results = comm.allgather(CombineState.ZERO_LENGTH)
+    else:
+        try:
+            verify_structure(
+                file_schema, allow_unresolved_maps=True
+            )  # Tier 1: structural correctness
+            # Tier 2: does this rank actually contribute any rows?
+            results = comm.allgather(CombineState.VALID)
+        except ValueError:
+            results = comm.allgather(CombineState.INVALID)
+            raise
     if any(rs == CombineState.INVALID for rs in results):
         raise ValueError("One or more ranks recieved invalid schemas!")
     has_data = [i for i, state in enumerate(results) if state == CombineState.VALID]
@@ -144,13 +142,10 @@ def cleanup_mpi(comm_world: MPI.Comm, comm_write: MPI.Comm, group_write: MPI.Gro
 
 def sync_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
     from opencosmo.collection.simulation.io import resort_simulation_collection_mpi
-    from opencosmo.collection.structure.io import rebuild_data_linked
 
     schema = sync_uuids(schema, comm, {})
     if schema.type == FileEntry.SIMULATION_COLLECTION:
         schema = resort_simulation_collection_mpi(schema, comm)
-    elif schema.type == FileEntry.STRUCTURE_COLLECTION:
-        schema = rebuild_data_linked(schema)
     return verify_schemas(schema, comm)
 
 
