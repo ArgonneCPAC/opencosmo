@@ -38,7 +38,6 @@ def get_data(
     format: str,
     unpack: bool = False,
     wrap_single: bool = False,
-    metadata_columns: list | None = None,
     **kwargs,
 ):
     verify_format(format)
@@ -54,7 +53,6 @@ def get_data(
     data = st.get_data(
         state,
         unit_kwargs=unit_kwargs,
-        metadata_columns=metadata_columns or [],
         **kwargs,
     )  # dict
     if unpack:
@@ -244,7 +242,6 @@ def take(
 
 def rows(
     state: DatasetState,
-    metadata_columns: list | None = None,
     include_units: bool = True,
 ):
     if state.convention.value == "physical":
@@ -255,7 +252,7 @@ def rows(
     else:
         unit_kwargs = {}
 
-    for row in st.iter_rows(state, metadata_columns, unit_kwargs):
+    for row in st.iter_rows(state, unit_kwargs):
         output_data = row
         if not isinstance(output_data, dict):
             output_data = {state.columns[0]: row}

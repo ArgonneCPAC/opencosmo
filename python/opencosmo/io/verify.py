@@ -139,7 +139,8 @@ def verify_dataset_data(schema: Schema, has_index=True):
     Verify a given dataset is valid. Requiring:
     1. It has a data group
     2. It has a spatial index group (if has_index = True)
-    3. If it has any metadata groups, they are the same length as the data group
+    3. Any sibling column group (e.g. /data_linked) is the same length and
+       combine strategy as the data group
 
     Once this is verified, we delegate to verify_column_group to ensure
     individual column groups are valid.
@@ -149,7 +150,7 @@ def verify_dataset_data(schema: Schema, has_index=True):
     if "data" not in children or ("index" not in children and has_index):
         raise ValueError("Datasets must have at least a data group and a index group")
 
-    metadata_groups = [
+    sibling_groups = [
         child
         for name, child in schema.children.items()
         if name not in ["data", "index"] and child.type == FileEntry.COLUMNS
@@ -159,11 +160,12 @@ def verify_dataset_data(schema: Schema, has_index=True):
     if has_index:
         for child in schema.children["index"].children.values():
             verify_column_group(child)
-    for md_child in metadata_groups:
-        _, md_length, md_combine_strategy = verify_column_group(md_child)
-        if md_length != data_length or md_combine_strategy != data_combine_strategy:
+    for sibling in sibling_groups:
+        _, sib_length, sib_combine_strategy = verify_column_group(sibling)
+        if sib_length != data_length or sib_combine_strategy != data_combine_strategy:
             raise ValueError(
-                "Metadata groups must be the same length and have the same combine strategy as data groups!"
+                "Sibling column groups must be the same length and have the same "
+                "combine strategy as the data group!"
             )
 
 

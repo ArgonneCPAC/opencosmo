@@ -343,7 +343,6 @@ def open_dataset(
     target: DatasetTarget,
     index: "IndexSpec",
     *,
-    metadata_group: Optional[str] = None,
     open_kwargs: dict[str, Any] = {},
 ) -> oc.Dataset:
     header = target["header"]
@@ -389,7 +388,6 @@ def open_dataset(
         sim_region,
         open_kwargs,
         data_index,
-        metadata_group,
         tree=tree,
     )
 

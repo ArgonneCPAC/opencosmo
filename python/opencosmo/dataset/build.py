@@ -30,11 +30,8 @@ def build_dataset_from_data(
     descriptions: GroupedColumnData[str] = {},
 ) -> Dataset:
     data_keys = set(data.keys())
-    metadata_group = None
-    if not data_keys or len(data_keys) > 2 or "data" not in data_keys:
-        raise ValueError(
-            "Data must have at least one `data` group and at most one metadata group"
-        )
+    if data_keys != {"data"}:
+        raise ValueError("Data must have exactly one `data` group")
     if descriptions and not set(descriptions.keys()).issubset(data.keys()):
         raise ValueError(
             "Descriptions should be organized into the same groups as the data!"
@@ -45,15 +42,10 @@ def build_dataset_from_data(
         spatial_index_columns = make_spatial_index(spatial_index_data)
         tree = Tree(HealPixIndex(), spatial_index_columns)
     data_group = data.pop("data")
-    if len(data_keys) == 2:
-        metadata_group = next(iter(data.values()))
-    else:
-        metadata_group = {}
 
     data_descriptions = descriptions.get("data", {})
     new_state = state.state_in_memory(
         data_group,
-        metadata_group,
         header,
         header.file.unit_convention,
         region,

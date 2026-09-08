@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-import astropy.units as u  # type: ignore
-import healpy as hp
 import numpy as np
 from astropy.coordinates import SkyCoord  # type: ignore
 
@@ -34,36 +32,11 @@ def check_containment(
         return __check_containment_3d(state, region, dtype, select_by)
 
 
-def get_theta_phi_coordinates(state: DatasetState):
-    from opencosmo.dataset import operations as dsops
-
-    selected = dsops.select(state, ["theta", "phi"])
-    coord_values = dsops.get_data(selected, "astropy", unpack=False)
-    ra = coord_values["phi"]
-    dec = np.pi / 2 - coord_values["theta"]
-
-    return SkyCoord(ra, dec, unit=u.rad)
-
-
-def get_theta_phi_coordinates_pixel(state: DatasetState):
-    from opencosmo.dataset import state as st
-
-    pixel_values = np.atleast_1d(st.get_metadata(state, ["pixel"])["pixel"])
-    theta, phi = hp.pix2ang(
-        state.header.healpix_map["nside"], pixel_values, lonlat=False, nest=True
-    )
-    ra = phi
-    dec = np.pi / 2 - theta
-    return SkyCoord(ra, dec, unit=u.rad)
-
-
 def find_coordinates_2d(state: DatasetState):
     from opencosmo.dataset import operations as dsops
 
     columns = set(state.columns)
-    if state.header.file.data_type == "healpix_map":
-        return get_theta_phi_coordinates_pixel(state)
-    elif len(columns.intersection(set(["ra", "dec"]))) == 2:
+    if len(columns.intersection(set(["ra", "dec"]))) == 2:
         selected = dsops.select(state, ["ra", "dec"])
         data = dsops.get_data(selected, "astropy", unpack=False)
         return SkyCoord(data["ra"], data["dec"])

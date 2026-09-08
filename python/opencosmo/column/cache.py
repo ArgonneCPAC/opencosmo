@@ -23,6 +23,7 @@ from opencosmo.mpi import (
 
 if TYPE_CHECKING:
     from opencosmo.index import DataIndex
+    from opencosmo.io.schema import Schema
 
 # (producer_uuid, column_name) — the unambiguous key for a cached column.
 CacheKey = tuple[UUID, str]
@@ -85,16 +86,12 @@ class ColumnCache:
         cached_data: dict[CacheKey, np.ndarray],
         registered_column_groups: dict[int, set[CacheKey]],
         column_descriptions: dict[str, str],
-        metadata_columns: set[str],
-        metadata_data: dict[str, np.ndarray],
         derived_index: Optional[DataIndex],
         parent: Optional[ref[ColumnCache]],
         children: Optional[list[ref[ColumnCache]]],
     ):
         self.__cached_data = cached_data
         self.__registered_column_groups = registered_column_groups
-        self.__metadata_columns = metadata_columns
-        self.__metadata_data = metadata_data
         self.__descriptions = column_descriptions
         self.__derived_index = derived_index
         self.__parent = parent
@@ -115,7 +112,7 @@ class ColumnCache:
 
     @classmethod
     def empty(cls):
-        return ColumnCache({}, {}, {}, set(), {}, None, None, [])
+        return ColumnCache({}, {}, {}, None, None, [])
 
     @property
     def columns(self) -> set[str]:
@@ -123,10 +120,6 @@ class ColumnCache:
 
     def keys(self) -> set[CacheKey]:
         return set(self.__cached_data.keys())
-
-    @property
-    def metadata_columns(self) -> set[str]:
-        return self.__metadata_columns
 
     @property
     def descriptions(self) -> dict[str, str]:
@@ -139,13 +132,10 @@ class ColumnCache:
         return set().union(*self.__registered_column_groups.values())
 
     def create_child(self) -> ColumnCache:
-        return ColumnCache({}, {}, {}, self.__metadata_columns, {}, None, ref(self), [])
+        return ColumnCache({}, {}, {}, None, ref(self), [])
 
-    def make_schema(
-        self, columns_to_uuid: dict[str, UUID], meta_columns: list[str]
-    ) -> tuple:
+    def make_schema(self, columns_to_uuid: dict[str, UUID]) -> Schema:
         data = {}
-        metadata = {}
 
         cached = self.get_data({(uuid, name) for name, uuid in columns_to_uuid.items()})
         for name, coldata in _flatten(cached).items():
@@ -162,37 +152,10 @@ class ColumnCache:
             writer = ColumnWriter.from_numpy_array(column_data, attrs=attrs)
             data[name] = writer
 
-        for name, coldata in self.get_metadata(meta_columns).items():
-            if isinstance(coldata, u.Quantity):
-                column_data = coldata.value
-                unit_str = str(coldata.unit)
-            else:
-                column_data = coldata
-                unit_str = ""
-            attrs = {
-                "unit": unit_str,
-                "description": self.__descriptions.get(name, "None"),
-            }
-            writer = ColumnWriter.from_numpy_array(column_data, attrs=attrs)
-            metadata[name] = writer
+        if not data:
+            return make_schema("data", FileEntry.EMPTY)
 
-        if not data and not metadata:
-            return (
-                make_schema("data", FileEntry.EMPTY),
-                make_schema("metadata", FileEntry.EMPTY),
-            )
-
-        data_schema = (
-            make_schema("data", FileEntry.COLUMNS, columns=data)
-            if data
-            else make_schema("data", FileEntry.EMPTY)
-        )
-        metadata_schema = (
-            make_schema("metadata", FileEntry.COLUMNS, columns=metadata)
-            if metadata
-            else make_schema("metadata", FileEntry.EMPTY)
-        )
-        return data_schema, metadata_schema
+        return make_schema("data", FileEntry.COLUMNS, columns=data)
 
     def redistribute(
         self, reorder_map, length, columns_to_keep: dict[UUID, list[str]], comm
@@ -217,9 +180,7 @@ class ColumnCache:
                 if comm.Get_rank() == 0:
                     all_data = all_data[reorder_map]
                 new_data[(uuid, name)] = scatter_data(all_data, length, comm)
-        return ColumnCache(
-            new_data, {}, self.__descriptions, set(), {}, None, None, None
-        )
+        return ColumnCache(new_data, {}, self.__descriptions, None, None, None)
 
     def __push_down(self, data: dict[CacheKey, np.ndarray]):
         pairs_to_keep = self.registered_pairs.intersection(data.keys()).difference(
@@ -316,16 +277,6 @@ class ColumnCache:
 
         self.__cached_data |= flat
 
-    def add_metadata(
-        self,
-        data: dict[str, np.ndarray],
-        descriptions: dict[str, str] = {},
-    ):
-        """Add metadata columns (name-keyed, no producer UUID) to the cache."""
-        self.__metadata_columns = self.__metadata_columns.union(data.keys())
-        self.__descriptions |= descriptions
-        self.__metadata_data |= data
-
     def drop(self, column_names: Iterable[str]) -> ColumnCache:
         names_to_drop = set(column_names)
         data = {
@@ -338,15 +289,7 @@ class ColumnCache:
             for name, desc in self.__descriptions.items()
             if name not in names_to_drop
         }
-        new_meta_columns = self.__metadata_columns.difference(names_to_drop)
-        new_meta_data = {
-            name: val
-            for name, val in self.__metadata_data.items()
-            if name not in names_to_drop
-        }
-        return ColumnCache(
-            data, {}, descriptions, new_meta_columns, new_meta_data, None, None, []
-        )
+        return ColumnCache(data, {}, descriptions, None, None, [])
 
     def request(
         self, pairs: set[CacheKey], index: Optional[DataIndex]
@@ -383,9 +326,7 @@ class ColumnCache:
             raise ValueError(
                 "Tried to take more elements than the length of the cache!"
             )
-        new_cache = ColumnCache(
-            {}, {}, {}, self.__metadata_columns, {}, index, ref(self), []
-        )
+        new_cache = ColumnCache({}, {}, {}, index, ref(self), [])
         self.__children.append(ref(new_cache))
         return new_cache
 
@@ -399,20 +340,6 @@ class ColumnCache:
         flat = {key: self.__cached_data[key] for key in pairs_in_cache}
         flat |= self.__get_derived_pairs(missing_pairs)
         return _unflatten(flat)
-
-    def get_metadata(self, column_names: Iterable[str]) -> dict[str, np.ndarray]:
-        """Retrieve name-keyed metadata columns."""
-        names = set(column_names)
-        result = {
-            name: self.__metadata_data[name]
-            for name in names
-            if name in self.__metadata_data
-        }
-        if self.__parent is not None and (p := self.__parent()) is not None:
-            missing = names - set(result.keys())
-            if missing:
-                result |= p.get_metadata(missing)
-        return result
 
     def __get_derived_pairs(self, pairs: set[CacheKey]) -> dict[CacheKey, np.ndarray]:
         if self.__parent is None:

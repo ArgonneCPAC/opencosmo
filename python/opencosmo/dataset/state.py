@@ -95,7 +95,6 @@ class DatasetState:
     region: Region
     open_kwargs: dict[str, Any]
     sort_key: Optional[tuple[str, bool, bool]]
-    metadata_columns: frozenset[str]
 
     def __post_init__(self):
         self.cache.register_column_group(id(self), self.column_map)
@@ -107,15 +106,7 @@ class DatasetState:
         if self.sort_key is not None and self.sort_key[2]:
             sort_to_drop = self.sort_key[0]
 
-        return [
-            c
-            for c in self.column_map
-            if c not in self.metadata_columns.union(set([sort_to_drop]))
-        ]
-
-    @property
-    def meta_columns(self) -> list[str]:
-        return [c for c in self.column_map if c in self.metadata_columns]
+        return [c for c in self.column_map if c != sort_to_drop]
 
     @property
     def descriptions(self):
@@ -168,7 +159,6 @@ def state_from_target(
     region: Region,
     open_kwargs: dict[str, Any],
     index: Optional[DataIndex] = None,
-    metadata_group: Optional[str] = None,
     tree: Tree | None = None,
 ) -> DatasetState:
     data_group = target["dataset_group"]
@@ -180,16 +170,10 @@ def state_from_target(
     handler = Hdf5Handler.from_columns(
         target["columns"],
         index,
-        metadata_group,
         load_conditions,
     )
     unit_handler = make_unit_handler_from_hdf5(
         target["columns"], target["header"], unit_convention
-    )
-    meta_column_names = frozenset(
-        col.name.split("/")[-1]
-        for col in target["columns"]
-        if metadata_group and col.name.split("/")[-2] == metadata_group
     )
     descriptions = handler.descriptions
     uuids = handler.get_uuids()
@@ -199,7 +183,6 @@ def state_from_target(
             cname,
             descriptions.get(cname, "None"),
             _uuid=uuid,
-            no_cache=cname in meta_column_names,
             on_disk=True,
         )
         for cname, uuid in uuids.items()
@@ -219,13 +202,11 @@ def state_from_target(
         region=region,
         open_kwargs=open_kwargs,
         sort_key=None,
-        metadata_columns=meta_column_names,
     )
 
 
 def state_in_memory(
     data_columns: dict,
-    metadata_columns: dict,
     header: OpenCosmoHeader,
     unit_convention: UnitConvention,
     region: Region,
@@ -236,7 +217,7 @@ def state_in_memory(
 ) -> DatasetState:
     descriptions = descriptions or {}
 
-    all_columns = dict(data_columns) | dict(metadata_columns)
+    all_columns = dict(data_columns)
     raw_producers = [
         RawColumn(
             cname, descriptions.get(cname, "None"), get_raw_column_uuid(cname, set())
@@ -260,7 +241,7 @@ def state_in_memory(
     unit_handler = make_unit_handler_from_units(units, header, unit_convention)
 
     return DatasetState(
-        uuid=get_in_memory_dataset_uuid(data_columns, metadata_columns),
+        uuid=get_in_memory_dataset_uuid(data_columns),
         producers=producers,
         raw_data_handler=EmptyHandler(),
         cache=cache,
@@ -271,7 +252,6 @@ def state_in_memory(
         region=region,
         open_kwargs=open_kwargs,
         sort_key=None,
-        metadata_columns=frozenset(metadata_columns.keys()),
     )
 
 
@@ -287,7 +267,6 @@ def exit_state(state: DatasetState, *exec_details):
 def get_data(
     state: DatasetState,
     ignore_sort: bool = False,
-    metadata_columns: list = [],
     unit_kwargs: dict = {},
 ) -> dict:
     """
@@ -317,16 +296,11 @@ def get_data(
     if state.sort_key is not None and not new_order:
         new_order = [state.sort_key[0]]
 
-    for name in metadata_columns:
-        if name in state.metadata_columns:
-            new_order.append(name)
-
     return {name: data[name] for name in new_order}
 
 
 def iter_rows(
     state: DatasetState,
-    metadata_columns: list | None = None,
     unit_kwargs: dict = {},
 ) -> Generator:
     """
@@ -350,9 +324,7 @@ def iter_rows(
     try:
         for start, end in chunk_ranges:
             chunk = take_rows(state, single_chunk(start, end - start))
-            data = get_data(
-                chunk, metadata_columns=metadata_columns or [], unit_kwargs=unit_kwargs
-            )
+            data = get_data(chunk, unit_kwargs=unit_kwargs)
             for name in derived_to_collect:
                 derived_storage[name].append(data[name])
 
@@ -374,34 +346,9 @@ def iter_rows(
         raise
 
 
-def get_metadata(
-    state: DatasetState, columns: list = [], ignore_sort: bool = False
-) -> dict:
-    names = list(columns) if columns else list(state.metadata_columns)
-    data = instantiate_dataset(
-        list(state.producers.values()),
-        {name: state.column_map[name] for name in names},
-        state.raw_data_handler,
-        state.cache,
-        state.unit_handler,
-        {},
-        None,
-    )
-    if ignore_sort:
-        return data
-
-    sorted_index = get_sorted_index(state)
-    if sorted_index is not None:
-        data = {name: values[sorted_index] for name, values in data.items()}
-    return data
-
-
 def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
-    """
-    Get metadata columns.
-    """
     producers = list(state.producers.values())
-    columns = set(state.column_map.keys()).difference(state.metadata_columns)
+    columns = set(state.column_map.keys())
     derived_names = get_derived_column_names(producers, columns)
     if derived_names:
         selected = select(state, derived_names)
@@ -421,7 +368,6 @@ def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
         state.raw_data_handler,
         state.cache,
         column_map,
-        state.meta_columns,
         state.header,
         state.tree,
         state.region,
@@ -507,7 +453,6 @@ def select(state: DatasetState, columns: set[str], drop: bool = False) -> Datase
         new_sort_key = (state.sort_key[0], state.sort_key[1], True)
 
     new_column_map = {n: state.column_map[n] for n in selections}
-    new_column_map |= {n: state.column_map[n] for n in state.metadata_columns}
     return dataclasses.replace(state, column_map=new_column_map, sort_key=new_sort_key)
 
 

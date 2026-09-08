@@ -85,7 +85,7 @@ def link_slot_values(
 
     For a chunked slot the values are the ``size`` column; for a simple slot they
     are the raw ``idx`` column including ``-1`` sentinels. Values are aligned with
-    ``source``'s logical row order, matching ``get_metadata``.
+    ``source``'s logical row order.
     """
     if isinstance(source, ocds.Dataset):
         return _slot_values(source, match_sets[source.uuid], name, source.index)

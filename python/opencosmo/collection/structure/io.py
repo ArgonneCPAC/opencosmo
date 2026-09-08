@@ -351,7 +351,6 @@ def build_lightcone_structure_collection(
             io.iopen.open_dataset(
                 t,
                 index_spec_for(index_kind, is_empty_ref, is_source=is_galaxy_source),
-                metadata_group="data_linked",
             )
             for t in link_sources["galaxy_properties"]
         ]
@@ -411,7 +410,6 @@ def build_lightcone_structure_collection(
         io.iopen.open_dataset(
             t,
             index_spec_for(index_kind, is_empty_ref, is_source=True),
-            metadata_group="data_linked",
         )
         for t in halo_source_list
     ]
@@ -471,7 +469,6 @@ def __build_structure_collection(
             index_spec_for(
                 index_kind, is_empty_ref, is_source=halo_properties_target is None
             ),
-            metadata_group="data_linked",
         )
         galaxy_match_sets = build_match_sets(
             galaxy_properties_target,
@@ -514,7 +511,6 @@ def __build_structure_collection(
         source_dataset = io.iopen.open_dataset(
             halo_properties_target,
             index_spec_for(index_kind, is_empty_ref, is_source=True),
-            metadata_group="data_linked",
         )
         halo_match_sets = build_match_sets(
             halo_properties_target,

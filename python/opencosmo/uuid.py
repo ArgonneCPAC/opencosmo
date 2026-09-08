@@ -49,9 +49,7 @@ def get_dataset_uuid(group: h5py.Group) -> UUID:
     return uuid5(NAMESPACE, f"{file_path}::{group.name}")
 
 
-def get_in_memory_dataset_uuid(
-    data_names: Iterable[str], metadata_names: Iterable[str]
-) -> UUID:
+def get_in_memory_dataset_uuid(data_names: Iterable[str]) -> UUID:
     """
     Mint the identity of a dataset built from in-memory columns.
 
@@ -59,10 +57,7 @@ def get_in_memory_dataset_uuid(
     building the same dataset agree without communication. Two structurally
     identical in-memory datasets therefore share an identity.
     """
-    id = (
-        f"in_memory::data={','.join(sorted(data_names))}"
-        f"::meta={','.join(sorted(metadata_names))}"
-    )
+    id = f"in_memory::data={','.join(sorted(data_names))}"
     return uuid5(NAMESPACE, id)
 
 

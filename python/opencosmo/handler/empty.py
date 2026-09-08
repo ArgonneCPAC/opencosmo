@@ -29,8 +29,8 @@ class EmptyHandler:
 
     def make_schema(self, *args, **kwargs):
         data_schema = make_schema("data", FileEntry.EMPTY)
-        metadata_schema = make_schema("metadata", FileEntry.EMPTY)
-        return data_schema, metadata_schema
+        link_schema = make_schema("data_linked", FileEntry.EMPTY)
+        return data_schema, link_schema
 
     def get_uuids(self) -> dict[str, UUID]:
         return {}
