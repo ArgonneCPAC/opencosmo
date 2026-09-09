@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import h5py
 import numpy as np
@@ -10,7 +13,10 @@ from pydantic import ValidationError
 
 from opencosmo.dtypes import read_map_header
 from opencosmo.header import read_header
+from opencosmo.io.cache import cache_layouts, get_cached_layouts
 from opencosmo.uuid import coerce_to_uuid, get_dataset_uuid
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -19,6 +25,165 @@ if TYPE_CHECKING:
 
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.mpi import MPI
+
+
+def encode_file_layout_blob(
+    layout: FileLayout, *, sha256: bool = True
+) -> dict[str, Any]:
+    """Encode a :class:`FileLayout` into a JSON-safe SQLite blob dict.
+
+    The returned dict is ready for :func:`json.dumps`.
+    """
+    groups_json = [group_to_dict(g) for g in layout.groups]
+    maps_json = [map_to_dict(m) for m in layout.maps]
+
+    blob: dict[str, Any] = {
+        "path": str(layout.path),
+        "error": layout.error,
+        "groups": groups_json,
+        "maps": maps_json,
+    }
+    if sha256:
+        canon = json.dumps(
+            blob, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        blob["sha256"] = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    return blob
+
+
+def decode_file_layout_blob(blob: dict[str, Any]) -> FileLayout | None:
+    """Decode a SQLite blob dict back into :class:`FileLayout`.
+
+    If ``sha256`` is present, it is validated against the canonical JSON encoding
+    of the decoded blob fields (excluding ``sha256`` itself).
+    """
+
+    expected = blob.get("sha256")
+    if expected is not None:
+        test_blob = dict(blob)
+        test_blob.pop("sha256", None)
+        canon = json.dumps(
+            test_blob, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        actual = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+        if actual != expected:
+            return None
+
+    from pathlib import Path
+
+    path = Path(blob["path"])
+    error = blob.get("error")
+    groups = tuple(group_from_dict(g) for g in blob.get("groups", []))
+    maps = tuple(map_from_dict(m) for m in blob.get("maps", []))
+
+    # Validation: errored layouts always have empty groups and/or caller may
+    # decide to ignore maps. We just reconstruct as provided.
+    return FileLayout(path=path, groups=groups, error=error, maps=maps)
+
+
+def group_to_dict(group: GroupLayout) -> dict[str, Any]:
+    return {
+        "path": group.path,
+        "header_path": group.header_path,
+        "header": group.header.to_dict(),
+        "column_names": list(group.column_names),
+        "column_dtypes": list(group.column_dtypes),
+        "row_count": group.row_count,
+        "has_index": group.has_index,
+        "linked_target_names": list(group.linked_target_names),
+        "uuid": str(group.uuid),
+        "has_persistent_uuid": group.has_persistent_uuid,
+        "link_layout": link_to_dict(group.link_layout) if group.link_layout else None,
+    }
+
+
+def group_from_dict(data: dict[str, Any]) -> GroupLayout:
+    from uuid import UUID
+
+    from opencosmo.header import OpenCosmoHeader
+
+    return GroupLayout(
+        path=data["path"],
+        header_path=data["header_path"],
+        header=OpenCosmoHeader.from_dict(data["header"]),
+        column_names=tuple(data["column_names"]),
+        column_dtypes=tuple(data["column_dtypes"]),
+        row_count=int(data["row_count"]),
+        has_index=bool(data["has_index"]),
+        linked_target_names=tuple(data["linked_target_names"]),
+        uuid=UUID(data["uuid"]),
+        has_persistent_uuid=bool(data["has_persistent_uuid"]),
+        link_layout=link_from_dict(data["link_layout"])
+        if data.get("link_layout")
+        else None,
+    )
+
+
+def link_to_dict(layout: LinkLayout | None) -> dict[str, Any]:
+    if layout is None:
+        raise ValueError("link_to_dict called with None")
+    return {
+        "path": layout.path,
+        "slots": [slot_to_dict(s) for s in layout.slots],
+    }
+
+
+def link_from_dict(data: dict[str, Any]) -> LinkLayout:
+    return LinkLayout(
+        path=data["path"],
+        slots=tuple(slot_from_dict(s) for s in data["slots"]),
+    )
+
+
+def slot_to_dict(slot: LinkSlot) -> dict[str, Any]:
+    return {
+        "prefix": slot.prefix,
+        "kind": slot.kind.value,
+        "dataset_names": list(slot.dataset_names),
+        "length": slot.length,
+    }
+
+
+def slot_from_dict(data: dict[str, Any]) -> LinkSlot:
+    return LinkSlot(
+        prefix=data["prefix"],
+        kind=LinkSlotKind(data["kind"]),
+        dataset_names=tuple(data["dataset_names"]),
+        length=int(data["length"]),
+    )
+
+
+def map_to_dict(map_layout: MapLayout) -> dict[str, Any]:
+    return {
+        "path": map_layout.path,
+        "reference": str(map_layout.reference),
+        "primary_slots": [
+            [name, str(uuid_)] for name, uuid_ in map_layout.primary_slots
+        ],
+        "primary_lengths": [
+            [str(uuid_), length] for uuid_, length in map_layout.primary_lengths
+        ],
+        "aux_slots": [[name, str(a), str(b)] for name, a, b in map_layout.aux_slots],
+    }
+
+
+def map_from_dict(data: dict[str, Any]) -> MapLayout:
+    from uuid import UUID
+
+    primary_slots = tuple(
+        (name, UUID(uuid_str)) for name, uuid_str in data["primary_slots"]
+    )
+    primary_lengths = tuple(
+        (UUID(uuid_str), int(length)) for uuid_str, length in data["primary_lengths"]
+    )
+    aux_slots = tuple((name, UUID(a), UUID(b)) for name, a, b in data["aux_slots"])
+    return MapLayout(
+        path=data["path"],
+        reference=UUID(data["reference"]),
+        primary_slots=primary_slots,
+        primary_lengths=primary_lengths,
+        aux_slots=aux_slots,
+    )
 
 
 @dataclass(frozen=True)
@@ -624,11 +789,32 @@ def discover_all(
 
     The only irreducible special case is the absence of a communicator: with no
     ``comm`` there is nothing to allgather, so the local walk is the final result.
+
+    Layouts are memoized on disk via :mod:`opencosmo.io.cache`, keyed by path and
+    mtime. Cache misses fall through to :func:`discover_file`, and all cache
+    errors degrade to a full walk.
     """
     rank = comm.Get_rank() if comm is not None else 0
     nranks = comm.Get_size() if comm is not None else 1
 
-    my_layouts = [discover_file(p) for p in paths[rank::nranks]]
+    my_files = paths[rank::nranks]
+
+    try:
+        cached_layouts = get_cached_layouts(my_files)
+    except Exception:
+        logger.debug("cache read failed in discover_all", exc_info=True)
+        cached_layouts = {}
+
+    fresh_layouts = [discover_file(p) for p in my_files if p not in cached_layouts]
+
+    try:
+        # Safe to write per-rank: round-robin assignment (paths[rank::nranks])
+        # guarantees that no two ranks ever discover or cache the same file.
+        cache_layouts(fresh_layouts)
+    except Exception:
+        logger.debug("cache write failed in discover_all", exc_info=True)
+
+    my_layouts = fresh_layouts + list(cached_layouts.values())
 
     if comm is not None:
         my_layouts = [

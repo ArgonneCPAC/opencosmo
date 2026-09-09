@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from opencosmo.io.discover import discover_all, discover_file
+from opencosmo.io.discover import discover_all, discover_file, encode_file_layout_blob
 from opencosmo.mpi import get_comm_world
 from pytest_mpi.parallel_assert import parallel_assert
 
@@ -13,6 +15,19 @@ def _layout_signature(layout) -> tuple:
         tuple((g.path, g.header_path) for g in layout.groups),
         layout.error,
     )
+
+
+def _layout_blob_fingerprint(layout) -> tuple:
+    """Compute a stable, byte-identical fingerprint of a FileLayout."""
+    blob = encode_file_layout_blob(layout)
+    # encode_file_layout_blob already includes sha256; wrap in a tuple so we keep
+    # the surrounding structure comparable with tuple equality.
+    return (blob.get("sha256"), json_dumps_sorted(blob))
+
+
+def json_dumps_sorted(obj: object) -> str:
+    """Deterministic JSON string for stable comparisons in tests."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 @pytest.mark.parallel(nprocs=4)
@@ -186,4 +201,49 @@ def test_dataset_uuids_agree_across_ranks(test_data):
     for rank, uuids in enumerate(gathered_direct_uuids):
         parallel_assert(
             uuids == gathered_direct_uuids[0], f"Rank {rank} direct UUIDs differ"
+        )
+
+
+@pytest.mark.parallel(nprocs=4)
+def test_discover_all_cache_warm_cold_determinism(test_data):
+    """Test discover_all determinism with a mixed warm/cold cache across ranks."""
+    comm = get_comm_world()
+    if comm is None:
+        pytest.skip("MPI not available")
+
+    all_paths = sorted(
+        test_data.lightcone.step(600).all + test_data.lightcone.step(601).all
+    )
+    # Rank is not needed for the assertion; discovery determinism is checked
+    # by comparing final layout fingerprints across all ranks.
+    _rank = comm.Get_rank()
+
+    # Prime the on-disk discovery cache for a deterministic subset of files.
+    #
+    # If the MPI test environment uses a shared user cache directory (e.g.
+    # session-scoped fixture), then rank 0 priming is visible to all ranks.
+    # If instead each rank gets a distinct temp user cache dir (per-rank), then
+    # warming is not shared; we still prime a deterministic subset on every rank
+    # so that the "mixed warm/cold" path inside discover_all is exercised.
+    subset = all_paths[::2]
+
+    # We intentionally prime every rank when caches are per-rank (the common
+    # case for temp user cache dirs). When caches are shared (e.g.
+    # session-scoped user cache), rank 0 priming is sufficient and other
+    # ranks' primes are redundant but safe.
+    from opencosmo.io.cache import cache_layouts
+
+    prime_layouts = [discover_file(p) for p in subset]
+    cache_layouts(prime_layouts)
+
+    comm.Barrier()
+
+    layouts = discover_all(all_paths, comm=comm)
+    per_rank = comm.allgather(layouts)
+    rank0_fps = [_layout_blob_fingerprint(fl) for fl in per_rank[0]]
+    for rank_idx, rank_layouts in enumerate(per_rank):
+        fps = [_layout_blob_fingerprint(fl) for fl in rank_layouts]
+        parallel_assert(
+            fps == rank0_fps,
+            f"Rank {rank_idx} layouts differ from rank 0 (warm/cold cache determinism)",
         )

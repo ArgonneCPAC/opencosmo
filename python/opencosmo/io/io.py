@@ -152,7 +152,7 @@ def open(
     else:
         file_list = list(files)
     file_list.sort()
-    paths = [Path(fp) for fp in file_list]
+    paths = [Path(fp).expanduser().resolve() for fp in file_list]
     return open_files(paths, open_kwargs, mpi_mode=mode)
 
     # For now the only way to open multiple files is with a StructureCollection

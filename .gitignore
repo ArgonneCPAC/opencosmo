@@ -181,3 +181,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 .aider*
+
+# Local on-disk discovery cache (created by test/manual runs)
+.opencosmo/

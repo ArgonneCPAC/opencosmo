@@ -133,7 +133,7 @@ class CosmoToolsParameters(BaseModel):
 
     @field_serializer("cosmotools_steps")
     def serialize_steps(self, steps) -> list[int]:
-        return list(steps)
+        return sorted(steps)
 
 
 class ReformatParameters(BaseModel):
