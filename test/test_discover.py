@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import pickle
 import random
 import shutil
@@ -10,11 +12,16 @@ from uuid import UUID
 import h5py
 import numpy as np
 import pytest
+
+import opencosmo as oc
 from opencosmo.header import OpenCosmoHeader
 from opencosmo.io.discover import (
+    FileLayout,
     LinkSlotKind,
+    decode_file_layout_blob,
     discover_all,
     discover_file,
+    encode_file_layout_blob,
     group_data_type,
     has_linked_targets,
     header_scopes,
@@ -23,15 +30,33 @@ from opencosmo.io.discover import (
     is_particle_group,
     is_properties_group,
 )
+from opencosmo.units.get import parse_unit_string
+from opencosmo.uuid import get_column_uuid
 
 if TYPE_CHECKING:
     from conftest import TestDataPaths
 
 
+def _normalize_attr_for_test(value) -> str | None:
+    """Independently normalize an HDF5 attribute value for comparison.
+
+    Mirrors what discovery does (bytes -> utf-8 str) without importing
+    discovery's own normalization helper, so the expectation stays an
+    independent read. ``None`` (attribute absent) is preserved as-is and
+    stays distinct from an empty string (attribute present but empty).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
 def _read_file_expected_layout(path: Path) -> dict:
     """
     Read a file with h5py and compute expected layout values.
-    Returns dict with keys: column_names, column_dtypes, row_count, has_index, linked_target_names.
+    Returns dict with keys: column_names, column_dtypes, column_units,
+    column_descriptions, row_count, has_index, linked_target_names.
     """
     with h5py.File(path, "r") as f:
         # Find data group (handle both "/" and nested cases)
@@ -63,6 +88,14 @@ def _read_file_expected_layout(path: Path) -> dict:
                 column_dtypes = tuple(
                     str(data_grp[col].dtype) for col in columns_in_data
                 )
+                column_units = tuple(
+                    _normalize_attr_for_test(data_grp[col].attrs.get("unit"))
+                    for col in columns_in_data
+                )
+                column_descriptions = tuple(
+                    _normalize_attr_for_test(data_grp[col].attrs.get("description"))
+                    for col in columns_in_data
+                )
                 row_count = (
                     data_grp[columns_in_data[0]].shape[0] if columns_in_data else 0
                 )
@@ -85,6 +118,8 @@ def _read_file_expected_layout(path: Path) -> dict:
                 result[group_key if group_key != "" else "/"] = {
                     "column_names": column_names,
                     "column_dtypes": column_dtypes,
+                    "column_units": column_units,
+                    "column_descriptions": column_descriptions,
                     "row_count": row_count,
                     "has_index": has_index,
                     "linked_target_names": linked_target_names,
@@ -138,6 +173,12 @@ class TestDiscoverSingleFiles:
             assert group.column_dtypes == expected["column_dtypes"], (
                 f"Column dtypes mismatch for {group.path}"
             )
+            assert group.column_units == expected["column_units"], (
+                f"Column units mismatch for {group.path}"
+            )
+            assert group.column_descriptions == expected["column_descriptions"], (
+                f"Column descriptions mismatch for {group.path}"
+            )
 
             # Check row count
             assert group.row_count == expected["row_count"], (
@@ -172,6 +213,8 @@ class TestDiscoverSingleFiles:
         # Verify expected structure
         expected = _read_file_expected_layout(path)["/"]
         assert group.column_names == expected["column_names"]
+        assert group.column_units == expected["column_units"]
+        assert group.column_descriptions == expected["column_descriptions"]
         assert group.row_count == expected["row_count"]
         assert group.has_index == expected["has_index"]
 
@@ -572,5 +615,129 @@ class TestHelperFunctions:
         path = test_data.healpix_map
         layout = discover_file(path)
         group = layout.groups[0]
-
         assert is_healpix_map_group(group)
+
+
+class TestFileLayoutBlobRoundTrip:
+    """column_units/column_descriptions must survive the JSON cache round trip
+    with None (absent), "" (present but empty), and a real unit string all
+    still distinct from one another."""
+
+    def test_units_and_descriptions_survive_json_round_trip(self, test_data):
+        """encode -> json.dumps -> json.loads -> decode preserves the mix."""
+        # Cheapest way to get a real OpenCosmoHeader without constructing one
+        # by hand: discover a real file and reuse its group's header.
+        path = test_data.snapshot.primary.halo_properties
+        discovered = discover_file(path)
+        base_group = discovered.groups[0]
+
+        n = len(base_group.column_names)
+        assert n >= 3, "test file needs at least 3 columns to exercise the mix"
+
+        column_units = tuple(
+            None if i % 3 == 0 else ("" if i % 3 == 1 else "comoving Mpc/h")
+            for i in range(n)
+        )
+        column_descriptions = tuple(
+            None if i % 3 == 0 else ("" if i % 3 == 1 else "a real description")
+            for i in range(n)
+        )
+
+        group = dataclasses.replace(
+            base_group,
+            column_units=column_units,
+            column_descriptions=column_descriptions,
+        )
+        layout = FileLayout(path=discovered.path, groups=(group,))
+
+        blob = encode_file_layout_blob(layout)
+        json_blob = json.loads(json.dumps(blob))
+        decoded = decode_file_layout_blob(json_blob)
+
+        assert decoded is not None, "sha256 check should have passed"
+
+        decoded_group = decoded.groups[0]
+        assert decoded_group.column_units[0] is None
+        assert decoded_group.column_units[1] == ""
+        assert decoded_group.column_units[2] == "comoving Mpc/h"
+
+        assert decoded_group.column_descriptions[0] is None
+        assert decoded_group.column_descriptions[1] == ""
+        assert decoded_group.column_descriptions[2] == "a real description"
+
+
+class TestWarmCacheZeroAttributeReads:
+    """The whole point of caching column_units/column_descriptions/uuids on
+    GroupLayout: opening a dataset with a warm layout cache must perform
+    zero per-column HDF5 attribute reads. Without this test, a future change
+    could silently reintroduce those reads with no visible symptom."""
+
+    def test_warm_open_reads_no_unit_or_description_attrs(self, test_data, monkeypatch):
+        paths = [
+            test_data.lightcone.step(600).halo_properties,
+            test_data.lightcone.step(601).halo_properties,
+        ]
+
+        # First open warms the on-disk layout cache. Not measured: this open
+        # is expected to read attributes since the cache starts cold.
+        oc.open(*paths)
+
+        calls: list[object] = []
+        orig_get = h5py.AttributeManager.get
+        orig_getitem = h5py.AttributeManager.__getitem__
+
+        def _get(self, k, *a, **kw):
+            calls.append(k)
+            return orig_get(self, k, *a, **kw)
+
+        def _getitem(self, k):
+            calls.append(k)
+            return orig_getitem(self, k)
+
+        monkeypatch.setattr(h5py.AttributeManager, "get", _get)
+        monkeypatch.setattr(h5py.AttributeManager, "__getitem__", _getitem)
+
+        # Same path list, so the warm cache actually hits.
+        oc.open(*paths)
+
+        unit_or_description_calls = [k for k in calls if k in ("unit", "description")]
+        assert unit_or_description_calls == [], (
+            f"warm open should not read column attrs, got: {calls}"
+        )
+
+
+class TestLayoutEquivalenceWithH5py:
+    """Units, descriptions, and column UUIDs obtained via the cached
+    layout/open path must match what a direct h5py attribute read produces."""
+
+    def test_units_descriptions_and_uuids_match_direct_h5py_reads(self, test_data):
+        path = test_data.snapshot.primary.halo_properties
+        resolved_path = path.resolve()
+
+        ds = oc.open(path)
+
+        # Reaching into Dataset internals: there is no public accessor for
+        # the per-column UnitApplicator or the raw base unit.
+        applicators = ds._state.unit_handler._UnitHandler__applicators
+        column_map = ds._state.column_map
+
+        with h5py.File(resolved_path, "r") as f:
+            data_grp = f["data"]
+            for name in ds.columns:
+                col = data_grp[name]
+
+                expected_unit = parse_unit_string(col.attrs.get("unit"))
+                actual_unit = applicators[name].base_unit
+                if expected_unit is None:
+                    assert actual_unit is None, f"unit mismatch for {name}"
+                else:
+                    assert actual_unit is not None, f"unit mismatch for {name}"
+                    assert actual_unit == expected_unit, f"unit mismatch for {name}"
+
+                expected_description = col.attrs.get("description")
+                assert ds.descriptions[name] == expected_description, (
+                    f"description mismatch for {name}"
+                )
+
+                expected_uuid = get_column_uuid(resolved_path, col.name)
+                assert column_map[name] == expected_uuid, f"uuid mismatch for {name}"

@@ -72,6 +72,8 @@ def _layout(
         header=_FakeHeader(_FakeFile(step, data_type, is_lightcone)),  # type: ignore[arg-type]
         column_names=("x", "y"),
         column_dtypes=("float64", "float64"),
+        column_units=("Mpc/h", None),
+        column_descriptions=("x position", ""),
         row_count=row_count,
         has_index=has_index,
         linked_target_names=linked,
