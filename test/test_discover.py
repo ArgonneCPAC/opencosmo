@@ -75,12 +75,10 @@ def _read_file_expected_layout(path: Path) -> dict:
                 if "data_linked" in group:
                     data_linked = group["data_linked"]
                     for key in data_linked.keys():
-                        if key.endswith("_start"):
-                            target_name = key.rsplit("_start", 1)[0]
-                            linked_target_names_set.add(target_name)
-                        elif key.endswith("_size"):
-                            target_name = key.rsplit("_size", 1)[0]
-                            linked_target_names_set.add(target_name)
+                        for suffix in ("_start", "_size", "_idx"):
+                            if key.endswith(suffix):
+                                linked_target_names_set.add(key.rsplit(suffix, 1)[0])
+                                break
 
                 linked_target_names = tuple(sorted(linked_target_names_set))
 
