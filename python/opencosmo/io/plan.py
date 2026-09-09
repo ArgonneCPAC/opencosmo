@@ -16,6 +16,7 @@ from opencosmo.io.discover import (
     has_linked_targets,
     is_properties_group,
 )
+from opencosmo.uuid import get_column_uuid
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -336,6 +337,15 @@ def build_from_assignment(
             # /data_linked group and never enter a dataset's column set.
             columns_list = [f[f"{data_path}/{name}"] for name in group.column_names]
 
+            column_units = dict(zip(group.column_names, group.column_units))
+            column_descriptions = dict(
+                zip(group.column_names, group.column_descriptions)
+            )
+            column_uuids = {
+                name: get_column_uuid(layout.path, f"{data_path}/{name}")
+                for name in group.column_names
+            }
+
             target: DatasetTarget = DatasetTarget(
                 uuid=group.uuid,
                 header=group.header,
@@ -344,6 +354,9 @@ def build_from_assignment(
                 columns=columns_list,
                 spatial_index=f[index_path] if group.has_index else None,
                 link_layout=group.link_layout,
+                column_units=column_units,
+                column_descriptions=column_descriptions,
+                column_uuids=column_uuids,
             )
 
             # load/if conditions legitimately filter datasets out at open time,

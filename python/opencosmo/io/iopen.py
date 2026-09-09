@@ -60,6 +60,9 @@ class DatasetTarget(TypedDict):
     columns: list[h5py.Dataset]
     spatial_index: Optional[h5py.Group]
     link_layout: Optional[LinkLayout]
+    column_units: dict[str, str | None]
+    column_descriptions: dict[str, str | None]
+    column_uuids: dict[str, UUID]
 
 
 class FileType(Enum):

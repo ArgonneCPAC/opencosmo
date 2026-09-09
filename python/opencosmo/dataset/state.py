@@ -171,12 +171,14 @@ def state_from_target(
         target["columns"],
         index,
         load_conditions,
+        descriptions=target["column_descriptions"],
+        uuids=target["column_uuids"],
     )
     unit_handler = make_unit_handler_from_hdf5(
         target["columns"], target["header"], unit_convention
     )
-    descriptions = handler.descriptions
-    uuids = handler.get_uuids()
+    descriptions = target["column_descriptions"]
+    uuids = target["column_uuids"]
 
     raw_producers = [
         RawColumn(

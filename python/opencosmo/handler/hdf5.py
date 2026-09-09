@@ -38,11 +38,15 @@ class Hdf5Handler:
         columns: dict[str, h5py.Dataset],
         index: DataIndex,
         load_conditions: Optional[dict[str, bool]] = None,
+        descriptions: Optional[dict[str, str | None]] = None,
+        uuids: Optional[dict[str, UUID]] = None,
     ):
         self.__index = index
         self.__columns = columns
         self.__in_memory = next(iter(columns.values())).file.driver == "core"
         self.__load_conditions = load_conditions
+        self.__descriptions = descriptions
+        self.__uuids = uuids
 
     @classmethod
     def from_columns(
@@ -50,6 +54,8 @@ class Hdf5Handler:
         columns: list[h5py.Dataset],
         index: Optional[DataIndex] = None,
         load_conditions: Optional[dict[str, bool]] = None,
+        descriptions: Optional[dict[str, str | None]] = None,
+        uuids: Optional[dict[str, UUID]] = None,
     ):
         all_columns = {
             col.name.split("/")[-1]: col
@@ -64,13 +70,25 @@ class Hdf5Handler:
         if index is None:
             index = from_size(lengths.pop())
 
-        return Hdf5Handler(all_columns, index, load_conditions)
+        return Hdf5Handler(
+            all_columns,
+            index,
+            load_conditions,
+            descriptions=descriptions,
+            uuids=uuids,
+        )
 
     def __len__(self):
         return get_length(self.__index)
 
     def with_index(self, index: DataIndex) -> Hdf5Handler:
-        return Hdf5Handler(self.__columns, index, self.__load_conditions)
+        return Hdf5Handler(
+            self.__columns,
+            index,
+            self.__load_conditions,
+            descriptions=self.__descriptions,
+            uuids=self.__uuids,
+        )
 
     @property
     def in_memory(self) -> bool:
@@ -81,17 +99,31 @@ class Hdf5Handler:
         return self.__load_conditions
 
     def get_uuids(self) -> dict[str, UUID]:
+        if self.__uuids is not None:
+            return self.__uuids
         return {name: get_hdf5_column_uuid(col) for name, col in self.__columns.items()}
 
     def take(self, other: DataIndex, sorted: Optional[np.ndarray] = None):
         if len(other) == 0:
-            return Hdf5Handler(self.__columns, other, self.__load_conditions)
+            return Hdf5Handler(
+                self.__columns,
+                other,
+                self.__load_conditions,
+                descriptions=self.__descriptions,
+                uuids=self.__uuids,
+            )
 
         if sorted is not None:
             return self.__take_sorted(other, sorted)
 
         new_index = take(self.__index, other)
-        return Hdf5Handler(self.__columns, new_index, self.__load_conditions)
+        return Hdf5Handler(
+            self.__columns,
+            new_index,
+            self.__load_conditions,
+            descriptions=self.__descriptions,
+            uuids=self.__uuids,
+        )
 
     def __take_sorted(self, other: DataIndex, sorted: np.ndarray):
         if get_length(sorted) != get_length(self.__index):
@@ -101,7 +133,13 @@ class Hdf5Handler:
         new_raw_index = into_array(self.__index)[new_indices]
         new_index = np.sort(new_raw_index)
 
-        return Hdf5Handler(self.__columns, new_index, self.__load_conditions)
+        return Hdf5Handler(
+            self.__columns,
+            new_index,
+            self.__load_conditions,
+            descriptions=self.__descriptions,
+            uuids=self.__uuids,
+        )
 
     @property
     def data(self):
@@ -115,8 +153,10 @@ class Hdf5Handler:
     def columns(self):
         return list(self.__columns.keys())
 
-    @cached_property
+    @property
     def descriptions(self):
+        if self.__descriptions is not None:
+            return self.__descriptions
         return {
             colname: column.attrs.get("description")
             for colname, column in self.__columns.items()
