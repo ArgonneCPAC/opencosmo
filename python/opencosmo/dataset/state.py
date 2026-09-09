@@ -32,7 +32,7 @@ from opencosmo.plugins.contexts import (
 )
 from opencosmo.plugins.hook import fold
 from opencosmo.units.handler import (
-    make_unit_handler_from_hdf5,
+    make_unit_handler_from_unit_strings,
     make_unit_handler_from_units,
 )
 from opencosmo.uuid import get_in_memory_dataset_uuid, get_raw_column_uuid
@@ -174,8 +174,8 @@ def state_from_target(
         descriptions=target["column_descriptions"],
         uuids=target["column_uuids"],
     )
-    unit_handler = make_unit_handler_from_hdf5(
-        target["columns"], target["header"], unit_convention
+    unit_handler = make_unit_handler_from_unit_strings(
+        target["column_units"], target["header"], unit_convention
     )
     descriptions = target["column_descriptions"]
     uuids = target["column_uuids"]

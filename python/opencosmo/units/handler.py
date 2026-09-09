@@ -10,6 +10,7 @@ from opencosmo.units.get import (
     UnitApplicator,
     get_unit_applicators_dict,
     get_unit_applicators_hdf5,
+    parse_unit_string,
 )
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ def make_unit_handler_from_hdf5(
 
 
 def make_unit_handler_from_units(
-    columns: dict[str, u.Unit],
+    columns: dict[str, u.Unit | None],
     header: "OpenCosmoHeader",
     target_convention: Optional[UnitConvention] = None,
 ):
@@ -60,6 +61,21 @@ def make_unit_handler_from_units(
         header.cosmology,
         applicators,
     )
+
+
+def make_unit_handler_from_unit_strings(
+    unit_strings: dict[str, str | None],
+    header: "OpenCosmoHeader",
+    target_convention: Optional[UnitConvention] = None,
+):
+    """
+    Cached-metadata counterpart to `make_unit_handler_from_hdf5`. Builds a
+    `UnitHandler` from unit strings captured during discovery (e.g.
+    `DatasetTarget["column_units"]`) rather than reading `unit` attributes
+    from live h5py datasets.
+    """
+    columns = {name: parse_unit_string(us) for name, us in unit_strings.items()}
+    return make_unit_handler_from_units(columns, header, target_convention)
 
 
 class UnitHandler:
