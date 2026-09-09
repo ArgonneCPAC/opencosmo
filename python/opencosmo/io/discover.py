@@ -71,14 +71,20 @@ def decode_file_layout_blob(blob: dict[str, Any]) -> FileLayout | None:
 
     from pathlib import Path
 
-    path = Path(blob["path"])
-    error = blob.get("error")
-    groups = tuple(group_from_dict(g) for g in blob.get("groups", []))
-    maps = tuple(map_from_dict(m) for m in blob.get("maps", []))
+    try:
+        path = Path(blob["path"])
+        error = blob.get("error")
+        groups = tuple(group_from_dict(g) for g in blob.get("groups", []))
+        maps = tuple(map_from_dict(m) for m in blob.get("maps", []))
 
-    # Validation: errored layouts always have empty groups and/or caller may
-    # decide to ignore maps. We just reconstruct as provided.
-    return FileLayout(path=path, groups=groups, error=error, maps=maps)
+        # Validation: errored layouts always have empty groups and/or caller may
+        # decide to ignore maps. We just reconstruct as provided.
+        return FileLayout(path=path, groups=groups, error=error, maps=maps)
+    except KeyError:
+        # A cached blob written before these fields were introduced is missing
+        # keys that group_from_dict now requires. Treat it as a cache miss
+        # rather than raising.
+        return None
 
 
 def group_to_dict(group: GroupLayout) -> dict[str, Any]:
@@ -88,6 +94,8 @@ def group_to_dict(group: GroupLayout) -> dict[str, Any]:
         "header": group.header.to_dict(),
         "column_names": list(group.column_names),
         "column_dtypes": list(group.column_dtypes),
+        "column_units": list(group.column_units),
+        "column_descriptions": list(group.column_descriptions),
         "row_count": group.row_count,
         "has_index": group.has_index,
         "linked_target_names": list(group.linked_target_names),
@@ -108,6 +116,8 @@ def group_from_dict(data: dict[str, Any]) -> GroupLayout:
         header=OpenCosmoHeader.from_dict(data["header"]),
         column_names=tuple(data["column_names"]),
         column_dtypes=tuple(data["column_dtypes"]),
+        column_units=tuple(data["column_units"]),
+        column_descriptions=tuple(data["column_descriptions"]),
         row_count=int(data["row_count"]),
         has_index=bool(data["has_index"]),
         linked_target_names=tuple(data["linked_target_names"]),
@@ -204,6 +214,14 @@ class GroupLayout:
 
     column_dtypes: tuple[str, ...]
     """str(dtype) for each column, same order as column_names."""
+
+    column_units: tuple[str | None, ...]
+    """``unit`` attribute of each column, index-aligned with column_names. None when
+    the attribute is absent."""
+
+    column_descriptions: tuple[str | None, ...]
+    """``description`` attribute of each column, index-aligned with column_names. None
+    when the attribute is absent."""
 
     row_count: int
     """Number of rows in the first column, or 0 if no /data group."""
@@ -342,6 +360,22 @@ def _make_group_map(
         if isinstance(item, h5py.Group):
             index.update(_make_group_map(item, path))
     return index
+
+
+def _normalize_attr(value: Any) -> str | None:
+    """Normalize an HDF5 attribute value to a plain str, preserving absence.
+
+    h5py may return attribute values as ``bytes``, ``np.bytes_``, ``str``, or
+    ``np.str_`` (including as a 0-d numpy object). ``None`` (attribute absent)
+    is passed through unchanged rather than collapsed with an empty string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8")
+    if isinstance(value, (str, np.str_)):
+        return str(value)
+    return str(value)
 
 
 def _header_scope(header_path: str) -> str:
@@ -702,15 +736,21 @@ def discover_file(path: Path) -> FileLayout:
                 )
 
                 column_names = tuple(columns_in_data)
-                column_dtypes = tuple(
-                    str(file_map[f"{data_path}/{col}"].dtype) for col in columns_in_data
+                column_handles = [
+                    file_map[f"{data_path}/{col}"] for col in columns_in_data
+                ]
+                column_dtypes = tuple(str(h.dtype) for h in column_handles)
+                column_units = tuple(
+                    _normalize_attr(h.attrs.get("unit")) for h in column_handles
+                )
+                column_descriptions = tuple(
+                    _normalize_attr(h.attrs.get("description")) for h in column_handles
                 )
 
                 # Row count from the first column, or 0 if no columns.
                 row_count = 0
-                if columns_in_data:
-                    first_col = file_map[f"{data_path}/{columns_in_data[0]}"]
-                    row_count = first_col.shape[0]
+                if column_handles:
+                    row_count = column_handles[0].shape[0]
 
                 # Check for index group.
                 group_parent = (
@@ -759,6 +799,8 @@ def discover_file(path: Path) -> FileLayout:
                         has_persistent_uuid=persistent_uuid is not None,
                         column_names=column_names,
                         column_dtypes=column_dtypes,
+                        column_units=column_units,
+                        column_descriptions=column_descriptions,
                         row_count=row_count,
                         has_index=has_index,
                         linked_target_names=linked_target_names,
