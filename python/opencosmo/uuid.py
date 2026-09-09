@@ -74,6 +74,27 @@ def get_hdf5_column_uuid(column: h5py.Dataset) -> UUID:
     return uuid5(NAMESPACE, id)
 
 
+def get_column_uuid(file_path: Path, column_path: str) -> UUID:
+    """
+    Mint a column identity from an already-resolved file path and an in-file
+    column path (e.g. an HDF5 dataset path).
+
+    Matches the scheme used by ``get_hdf5_column_uuid``, but is computed
+    against the *resolved* file path rather than the raw, unresolved path
+    reported by ``h5py``, so it agrees with ``get_dataset_uuid``.
+
+    ``file_path`` must already be resolved; this does not call ``.resolve()``
+    itself, because callers mint one UUID per column and a ``realpath`` syscall
+    per column is exactly the round trip the layout cache exists to avoid.
+    Paths reaching here from :func:`opencosmo.io.io.open` are resolved at
+    entry.
+
+    Column UUIDs are internal to the library and are not stable across
+    versions or between runs. Callers must not persist them.
+    """
+    return uuid5(NAMESPACE, f"{file_path}::{column_path}")
+
+
 def get_derived_column_uuid(
     dep_uuids: Iterable[UUID], output_names: Iterable[str], all_known_uuids: set[UUID]
 ):
