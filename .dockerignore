@@ -1,0 +1,27 @@
+# Build the image from a clean tree: only the package sources are needed.
+.git
+.github
+.venv
+venv
+target
+build
+dist
+wheels
+*.egg-info
+__pycache__
+*.py[cod]
+*.so
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.claude
+.opencode
+plans
+test_data
+test_data.tar.gz
+docs
+test
+branding
+*.md
+!README.md
+!LICENSE.md
