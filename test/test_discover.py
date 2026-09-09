@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import pickle
 import random
+import shutil
 from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING
+from uuid import UUID
 
 import h5py
+import numpy as np
 import pytest
 from opencosmo.header import OpenCosmoHeader
 from opencosmo.io.discover import (
+    LinkSlotKind,
     discover_all,
     discover_file,
     group_data_type,
@@ -18,6 +23,9 @@ from opencosmo.io.discover import (
     is_particle_group,
     is_properties_group,
 )
+
+if TYPE_CHECKING:
+    from conftest import TestDataPaths
 
 
 def _read_file_expected_layout(path: Path) -> dict:
@@ -67,12 +75,10 @@ def _read_file_expected_layout(path: Path) -> dict:
                 if "data_linked" in group:
                     data_linked = group["data_linked"]
                     for key in data_linked.keys():
-                        if key.endswith("_start"):
-                            target_name = key.rsplit("_start", 1)[0]
-                            linked_target_names_set.add(target_name)
-                        elif key.endswith("_size"):
-                            target_name = key.rsplit("_size", 1)[0]
-                            linked_target_names_set.add(target_name)
+                        for suffix in ("_start", "_size", "_idx"):
+                            if key.endswith(suffix):
+                                linked_target_names_set.add(key.rsplit(suffix, 1)[0])
+                                break
 
                 linked_target_names = tuple(sorted(linked_target_names_set))
 
@@ -193,6 +199,47 @@ class TestDiscoverSingleFiles:
         assert unpickled.error is None
         assert len(unpickled.groups) == len(layout.groups)
 
+    def test_dataset_uuid_persistence_and_stability(self, test_data):
+        """Test persistent and synthesized dataset identities."""
+        legacy_path = test_data.snapshot.primary.galaxy_properties
+        first_legacy = discover_file(legacy_path).groups[0]
+        second_legacy = discover_file(legacy_path).groups[0]
+
+        assert first_legacy.uuid == second_legacy.uuid
+        assert not first_legacy.has_persistent_uuid
+        assert first_legacy.uuid is not None
+
+        persistent_path = test_data.snapshot.primary.halo_properties
+        persistent_group = discover_file(persistent_path).groups[0]
+        with h5py.File(persistent_path, "r") as file:
+            on_disk_uuid = UUID(str(file["data"].attrs["main_uuid"]))
+
+        assert persistent_group.has_persistent_uuid
+        assert persistent_group.uuid == on_disk_uuid
+
+    def test_synthesized_dataset_uuid_resolves_file_path(self, test_data):
+        """Test that synthesized identities do not depend on path spelling."""
+        path = test_data.snapshot.primary.galaxy_properties
+        alternate_spelling = path.parent / ".." / path.parent.name / path.name
+
+        absolute_group = discover_file(path.absolute()).groups[0]
+        alternate_group = discover_file(alternate_spelling).groups[0]
+
+        assert absolute_group.uuid == alternate_group.uuid
+
+    def test_synthesized_dataset_uuids_are_distinct(self, test_data):
+        """Test that distinct legacy data groups have distinct identities."""
+        galaxy_group = discover_file(
+            test_data.snapshot.primary.galaxy_properties
+        ).groups[0]
+        profile_group = discover_file(test_data.snapshot.primary.halo_profiles).groups[
+            0
+        ]
+        multi_groups = discover_file(test_data.snapshot.multi_simulation).groups
+
+        assert galaxy_group.uuid != profile_group.uuid
+        assert len({group.uuid for group in multi_groups}) == len(multi_groups)
+
 
 class TestDiscoverNestedFile:
     """Test discovery of nested multi-group files."""
@@ -308,6 +355,164 @@ class TestDiscoverMalformed:
         # Should return error (no data groups)
         assert layout.error is not None
         assert layout.groups == ()
+
+
+class TestDiscoverLinkLayouts:
+    """Test frozen /data_linked layouts and their validation."""
+
+    @staticmethod
+    def _copy_properties_file(destination: Path, test_data: TestDataPaths) -> None:
+        """Copy a valid file whose header permits focused link-layout mutations."""
+        shutil.copyfile(test_data.snapshot.primary.halo_properties, destination)
+
+    @staticmethod
+    def _replace_link_group(
+        path: Path,
+        slots: dict[str, tuple[np.dtype, list[int]]],
+    ) -> None:
+        """Replace /data_linked with the supplied flat datasets."""
+        with h5py.File(path, "r+") as file:
+            del file["data_linked"]
+            link_group = file.create_group("data_linked")
+            for name, (dtype, values) in slots.items():
+                link_group.create_dataset(name, data=np.asarray(values, dtype=dtype))
+
+    def test_chunked_slots_record_link_layout(
+        self, tmp_path: Path, test_data: TestDataPaths
+    ) -> None:
+        """Chunked start/size slots retain their names, kind, and row length."""
+        path = tmp_path / "chunked.hdf5"
+        self._copy_properties_file(path, test_data)
+        self._replace_link_group(
+            path,
+            {
+                "halo_start": (np.dtype("int64"), [0, 4]),
+                "halo_size": (np.dtype("uint32"), [4, 2]),
+            },
+        )
+
+        layout = discover_file(path)
+
+        assert layout.error is None
+        assert layout.groups[0].link_layout is not None
+        assert layout.groups[0].link_layout.path == "/data_linked"
+        assert layout.groups[0].link_layout.slots[0].prefix == "halo"
+        assert layout.groups[0].link_layout.slots[0].kind is LinkSlotKind.CHUNKED
+        assert layout.groups[0].link_layout.slots[0].dataset_names == (
+            "halo_start",
+            "halo_size",
+        )
+        assert layout.groups[0].link_layout.slots[0].length == 2
+        assert layout.groups[0].linked_target_names == ("halo",)
+
+    def test_idx_slot_records_simple_kind(
+        self, tmp_path: Path, test_data: TestDataPaths
+    ) -> None:
+        """An idx slot is retained as an explicitly simple link slot."""
+        path = tmp_path / "idx.hdf5"
+        self._copy_properties_file(path, test_data)
+        self._replace_link_group(path, {"galaxy_idx": (np.dtype("int64"), [4, 2, 0])})
+
+        link_layout = discover_file(path).groups[0].link_layout
+
+        assert link_layout is not None
+        assert len(link_layout.slots) == 1
+        assert link_layout.slots[0].prefix == "galaxy"
+        assert link_layout.slots[0].kind is LinkSlotKind.SIMPLE
+        assert link_layout.slots[0].dataset_names == ("galaxy_idx",)
+        assert link_layout.slots[0].length == 3
+
+    def test_mixed_link_slots_are_sorted_and_picklable(
+        self, tmp_path: Path, test_data: TestDataPaths
+    ) -> None:
+        """Mixed flat slot representations are sorted and retain no live handles."""
+        path = tmp_path / "mixed.hdf5"
+        self._copy_properties_file(path, test_data)
+        self._replace_link_group(
+            path,
+            {
+                "zeta_idx": (np.dtype("int64"), [1]),
+                "alpha_size": (np.dtype("uint32"), [2]),
+                "alpha_start": (np.dtype("int64"), [0]),
+            },
+        )
+
+        layout = discover_file(path)
+
+        assert layout.error is None
+        assert layout.groups[0].link_layout is not None
+        assert tuple(slot.prefix for slot in layout.groups[0].link_layout.slots) == (
+            "alpha",
+            "zeta",
+        )
+        assert pickle.loads(pickle.dumps(layout)) == layout
+
+    @pytest.mark.parametrize(
+        "slots",
+        [
+            {"halo_start": (np.dtype("int64"), [0])},
+            {"halo_size": (np.dtype("uint32"), [1])},
+            {
+                "halo_start": (np.dtype("int64"), [0]),
+                "halo_size": (np.dtype("uint32"), [1]),
+                "halo_idx": (np.dtype("int64"), [0]),
+            },
+            {"halo_idx": (np.dtype("float64"), [0])},
+            {"halo_idx": (np.dtype("int64"), [[0]])},
+            {
+                "halo_start": (np.dtype("int64"), [0]),
+                "halo_size": (np.dtype("uint32"), [1, 2]),
+            },
+        ],
+    )
+    def test_malformed_link_slots_return_file_error(
+        self,
+        tmp_path: Path,
+        test_data: TestDataPaths,
+        slots: dict[str, tuple[np.dtype, list[int]]],
+    ) -> None:
+        """Malformed link slots fail discovery without raising."""
+        path = tmp_path / "malformed-links.hdf5"
+        self._copy_properties_file(path, test_data)
+        self._replace_link_group(path, slots)
+
+        layout = discover_file(path)
+
+        assert layout.error is not None
+        assert layout.groups == ()
+
+    def test_map_chunked_slots_remain_rejected(
+        self, tmp_path: Path, test_data: TestDataPaths
+    ) -> None:
+        """The /map validator must continue to reject chunked map slots."""
+        path = tmp_path / "chunked-map.hdf5"
+        self._copy_properties_file(path, test_data)
+        with h5py.File(path, "r+") as file:
+            map_group = file.create_group("map")
+            map_group.attrs["reference"] = "12345678-1234-5678-1234-567812345678"
+            map_group.attrs["format_version"] = 1
+            slot = map_group.create_group(
+                "primary/87654321-4321-8765-4321-876543218765"
+            )
+            slot.create_dataset("start", data=np.asarray([0], dtype=np.int64))
+            slot.create_dataset("size", data=np.asarray([1], dtype=np.uint32))
+
+        layout = discover_file(path)
+
+        assert layout.error is not None
+        assert "chunked" in layout.error
+
+    def test_real_link_layout_prefixes(self, test_data: TestDataPaths) -> None:
+        """The snapshot halo-properties file exposes its flat link prefixes."""
+        layout = discover_file(test_data.snapshot.primary.halo_properties)
+
+        assert layout.error is None
+        assert layout.groups[0].link_layout is not None
+        assert {
+            "sodbighaloparticles_star_particles",
+            "sod_profile",
+            "galaxyproperties",
+        }.issubset({slot.prefix for slot in layout.groups[0].link_layout.slots})
 
 
 class TestHelperFunctions:

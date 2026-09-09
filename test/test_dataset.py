@@ -3,6 +3,7 @@ import os
 import astropy.units as u
 import numpy as np
 import pytest
+from opencosmo.io.discover import discover_file
 
 import opencosmo as oc
 
@@ -27,6 +28,17 @@ def max_mass(input_path):
 def test_descriptions(input_path):
     ds = oc.open(input_path)
     assert isinstance(ds.descriptions, dict)
+
+
+def test_dataset_uuid_matches_discovery_and_survives_transformations(input_path):
+    """Test that dataset identity is preserved from opening through transforms."""
+    dataset = oc.open(input_path)
+    discovered_uuid = discover_file(input_path).groups[0].uuid
+
+    assert dataset.uuid == discovered_uuid
+    assert dataset.uuid == dataset.filter(oc.col("sod_halo_mass") > 0).uuid
+    assert dataset.uuid == dataset.select("fof_halo_mass").uuid
+    assert dataset.uuid == dataset.take(10).uuid
 
 
 def test_filter_oom(input_path, max_mass):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid5
 
 import pytest
 from opencosmo.io.discover import FileLayout, GroupLayout
@@ -13,6 +14,7 @@ from opencosmo.io.specs import (
     group_by_scope,
     match_spec,
 )
+from opencosmo.uuid import NAMESPACE
 
 
 # Mock header structure to build GroupLayouts without touching HDF5. group_data_type
@@ -57,7 +59,11 @@ def _group(
     dtypes: tuple[str, ...] = ("float64", "float64"),
     has_index: bool = True,
     simulation_name: str | None = "sim_a",
+    uuid_=None,
+    has_persistent_uuid: bool = False,
 ) -> GroupLayout:
+    if uuid_ is None:
+        uuid_ = uuid5(NAMESPACE, f"{Path(path).resolve()}::{path}/data")
     return GroupLayout(
         path=path,
         header_path=header_path,
@@ -67,6 +73,8 @@ def _group(
         row_count=100,
         has_index=has_index,
         linked_target_names=linked,
+        uuid=uuid_,
+        has_persistent_uuid=has_persistent_uuid,
     )
 
 

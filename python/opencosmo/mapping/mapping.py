@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from uuid import UUID
 
 import h5py
@@ -9,7 +9,7 @@ import numpy as np
 from opencosmo.io.schema import FileEntry, MapCoordinateState, Schema
 from opencosmo.io.writer import ColumnWriter
 
-from opencosmo.index import get_data, into_array
+from opencosmo.index import coalesce_chunks, get_data, into_array
 
 if TYPE_CHECKING:
     from opencosmo.index import DataIndex, SimpleIndex
@@ -50,10 +50,18 @@ Constraints:
 type SimpleH5pyIndex = h5py.Dataset
 
 
+class ChunkedSlot(NamedTuple):
+    start: h5py.Dataset
+    size: h5py.Dataset
+
+
+type MapSlot = SimpleH5pyIndex | ChunkedSlot
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetMatchSet:
     reference_source: UUID
-    primary_maps: dict[UUID, SimpleH5pyIndex]
+    primary_maps: dict[UUID, MapSlot]
     aux_maps: dict[tuple[UUID, UUID], tuple[SimpleH5pyIndex, SimpleH5pyIndex]]
     aliases: dict[str, UUID] = field(default_factory=dict)
 
@@ -150,6 +158,8 @@ class DatasetMatchSet:
 def get_all_maps(
     match_set: DatasetMatchSet, indices: dict[str, DataIndex], source: str
 ) -> dict[str, SimpleIndex]:
+    if __has_chunked_slots(match_set):
+        raise ValueError("Writing chunked mappings is not yet supported")
     lengths = {len(into_array(index)) for index in indices.values()}
     if len(lengths) != 1:
         raise RuntimeError("Matched datasets must have identical row counts")
@@ -164,6 +174,7 @@ def get_all_maps(
         assert target_uuid is not None
         mapping = get_mapping(match_set, source_uuid, target_uuid, source_index)
         assert mapping is not None
+        assert isinstance(mapping, np.ndarray)
         maps[name] = mapping
     return maps
 
@@ -223,6 +234,8 @@ def rebuild_single_with_source(
     This algorithm assumes mapping is one to one: Each row in the source maps to
     at most one row in the target.
     """
+    if __has_chunked_slots(match_set):
+        raise ValueError("Writing chunked mappings is not yet supported")
     new_primary_maps: dict[UUID, SimpleIndex] = {}
     old_source_uuid = match_set.get_uuid(source)
     assert old_source_uuid is not None
@@ -236,6 +249,7 @@ def rebuild_single_with_source(
         primary_map = get_primary_mapping(
             match_set, old_source_uuid, old_target_uuid, source_index
         )
+        assert isinstance(primary_map, np.ndarray)
         new_primary_maps[new_uuid] = primary_map[source_sort]
 
     new_auxiliary_maps: dict[tuple[UUID, UUID], tuple[SimpleIndex, SimpleIndex]] = {}
@@ -264,6 +278,8 @@ def rebuild_single_with_new_source(
     dict[UUID, SimpleIndex],
     dict[tuple[UUID, UUID], tuple[SimpleIndex, SimpleIndex]],
 ]:
+    if __has_chunked_slots(match_set):
+        raise ValueError("Writing chunked mappings is not yet supported")
     new_primary_maps: dict[UUID, SimpleIndex] = {}
     old_source_uuid = match_set.get_uuid(source)
     assert old_source_uuid is not None
@@ -278,6 +294,7 @@ def rebuild_single_with_new_source(
         assert old_target_uuid is not None
         mapping = get_mapping(match_set, old_source_uuid, old_target_uuid, source_index)
         assert mapping is not None
+        assert isinstance(mapping, np.ndarray)
         new_primary_maps[new_uuid] = mapping[source_sort]
 
     new_auxiliary_maps: dict[tuple[UUID, UUID], tuple[SimpleIndex, SimpleIndex]] = {}
@@ -326,7 +343,7 @@ def rebuild_single_with_new_source(
 
 def get_mapping(
     match_set: DatasetMatchSet, source: UUID | str, target: UUID | str, index: DataIndex
-) -> SimpleIndex | None:
+) -> DataIndex | None:
     source_uuid = match_set.aliases.get(str(source), source)
     target_uuid = match_set.aliases.get(str(target), target)
 
@@ -334,26 +351,37 @@ def get_mapping(
         raise ValueError("Mapping names must be UUIDs or registered aliases")
 
     try:
-        auxiliary_mapping = get_auxillary_mapping(
-            match_set, source_uuid, target_uuid, index
-        )
         mapping = get_primary_mapping(match_set, source_uuid, target_uuid, index)
     except KeyError as exc:
         raise ValueError(
             f"Unable to map from '{source}' to '{target}': no primary mapping route "
             "exists between these datasets."
         ) from exc
+    if source_uuid == match_set.reference_source and isinstance(
+        match_set.primary_maps[target_uuid], ChunkedSlot
+    ):
+        return mapping
+
+    auxiliary_mapping = get_auxillary_mapping(
+        match_set, source_uuid, target_uuid, index
+    )
     if auxiliary_mapping is None:
         return mapping
 
     aux_index, aux_mapping = auxiliary_mapping
+    assert isinstance(mapping, np.ndarray)
     mapping[aux_index] = aux_mapping
     return mapping
 
 
 def get_auxillary_mapping(
     match_set: DatasetMatchSet, source: UUID, target: UUID, index: DataIndex
-):
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if any(
+        isinstance(match_set.primary_maps.get(endpoint), ChunkedSlot)
+        for endpoint in (source, target)
+    ):
+        raise ValueError("Chunked mappings support reference-to-target routing only")
     auxillary_map = match_set.aux_maps.get((source, target))
     if auxillary_map is None:
         auxillary_map = match_set.aux_maps.get((target, source))
@@ -381,17 +409,35 @@ def get_auxillary_mapping(
 
 def get_primary_mapping(
     match_set: DatasetMatchSet, source: UUID, target: UUID, index: DataIndex
-):
+) -> DataIndex:
+    """Return the primary mapping from ``source`` to ``target`` at ``index``.
+
+    Simple slots preserve one output row per input row, using ``-1`` for
+    unmatched rows. Chunked reference-to-target slots instead omit zero-size
+    source rows and return coalesced target chunks, so their result is not
+    length-aligned with ``index``.
+    """
     if source == match_set.reference_source:
         mapping = match_set.primary_maps[target]
+        if isinstance(mapping, ChunkedSlot):
+            start = get_data(mapping.start, index)
+            size = get_data(mapping.size, index).astype(np.int64)
+            valid = size > 0
+            return coalesce_chunks(start[valid], size[valid])
         return get_data(mapping, index)
 
     elif target == match_set.reference_source:
         mapping = match_set.primary_maps[source]
+        if isinstance(mapping, ChunkedSlot):
+            raise ValueError(
+                "Chunked mappings support reference-to-target routing only"
+            )
         return __get_inverse_mapping(mapping, index, match_set.reference_source, source)
 
     map_to_source = match_set.primary_maps[source]
     map_to_target = match_set.primary_maps[target]
+    if isinstance(map_to_source, ChunkedSlot) or isinstance(map_to_target, ChunkedSlot):
+        raise ValueError("Chunked mappings support reference-to-target routing only")
 
     ref_rows = __get_inverse_mapping(
         map_to_source, index, match_set.reference_source, source
@@ -405,7 +451,7 @@ def get_primary_mapping(
 
 
 def __get_inverse_mapping(
-    mapping: SimpleH5pyIndex,
+    mapping: MapSlot,
     index: "DataIndex",
     reference_name: "str | UUID",
     source_name: "str | UUID",
@@ -440,6 +486,9 @@ def __get_inverse_mapping(
         rows in ``index``) so the error is deterministic regardless of prior
         filtering.
     """
+    if isinstance(mapping, ChunkedSlot):
+        raise ValueError("Chunked mappings support reference-to-target routing only")
+
     # Inversion is inherently non-lazy: we must read the entire forward map to
     # know which reference row points at a given source row.  This is bounded
     # by the reference dataset length, which is acceptable.
@@ -480,3 +529,62 @@ def __get_inverse_mapping(
     result[hit] = ref_rows[order[pos[hit]]]
 
     return result
+
+
+def get_slot_sizes(
+    match_set: DatasetMatchSet, target: UUID, index: DataIndex
+) -> np.ndarray:
+    """Return the signed sizes in a chunked primary slot."""
+    slot = match_set.primary_maps[target]
+    if not isinstance(slot, ChunkedSlot):
+        raise ValueError("Simple mappings do not have a size column")
+    return get_data(slot.size, index).astype(np.int64)
+
+
+def is_chunked_slot(match_set: DatasetMatchSet, target: UUID) -> bool:
+    """Return whether ``target``'s primary slot is a start/size pair."""
+    return isinstance(match_set.primary_maps[target], ChunkedSlot)
+
+
+def rebuild_target_index(
+    match_set: DatasetMatchSet,
+    target_uuid: UUID,
+    old_source_index: DataIndex,
+    new_source_index: DataIndex,
+) -> DataIndex:
+    """Return target positions implied by surviving rows of an old source index."""
+    index_into_original = __surviving_source_positions(
+        old_source_index, new_source_index
+    )
+    slot = match_set.primary_maps[target_uuid]
+    if isinstance(slot, ChunkedSlot):
+        sizes = get_slot_sizes(match_set, target_uuid, old_source_index)
+        boundaries = np.zeros(len(sizes) + 1, dtype=np.int64)
+        _ = np.cumsum(sizes, out=boundaries[1:])
+        valid = sizes[index_into_original] > 0
+        starts = boundaries[index_into_original[valid]]
+        return coalesce_chunks(starts, sizes[index_into_original[valid]])
+
+    mapping = get_data(slot, old_source_index)
+    valid = mapping >= 0
+    target_positions = np.full(len(mapping), -1, dtype=np.int64)
+    target_positions[valid] = np.arange(np.count_nonzero(valid), dtype=np.int64)
+    result = target_positions[index_into_original]
+    return result[result >= 0]
+
+
+def __surviving_source_positions(
+    old_source_index: DataIndex, new_source_index: DataIndex
+) -> np.ndarray:
+    original = into_array(old_source_index)
+    new = into_array(new_source_index)
+    _, index_into_original, index_into_new = np.intersect1d(
+        original, new, assume_unique=True, return_indices=True
+    )
+    return index_into_original[np.argsort(index_into_new)].astype(np.int64)
+
+
+def __has_chunked_slots(match_set: DatasetMatchSet) -> bool:
+    return any(
+        isinstance(slot, ChunkedSlot) for slot in match_set.primary_maps.values()
+    )

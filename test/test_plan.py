@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid5
 
 from opencosmo.io.discover import FileLayout, GroupLayout
 from opencosmo.io.io import MpiMode
 from opencosmo.io.plan import distribute
+from opencosmo.uuid import NAMESPACE
 
 
 # Mock header classes to simulate real OpenCosmoHeader structure without HDF5.
@@ -31,6 +33,8 @@ def _layout(
     linked: tuple[str, ...] = (),
     has_index: bool = True,
     error: str | None = None,
+    uuid_=None,
+    has_persistent_uuid: bool = False,
 ) -> FileLayout:
     """
     Build a single-group FileLayout with a fake header.
@@ -59,6 +63,9 @@ def _layout(
     FileLayout
         A single-group layout.
     """
+    if uuid_ is None:
+        uuid_ = uuid5(NAMESPACE, f"{Path(path).resolve()}::/data")
+
     grp = GroupLayout(
         path="/",
         header_path="/header",
@@ -68,6 +75,8 @@ def _layout(
         row_count=row_count,
         has_index=has_index,
         linked_target_names=linked,
+        uuid=uuid_,
+        has_persistent_uuid=has_persistent_uuid,
     )
     return FileLayout(path=Path(path), groups=(grp,), error=error)
 

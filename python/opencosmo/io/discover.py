@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
-from uuid import UUID
 
 import h5py
 import numpy as np
@@ -10,10 +10,12 @@ from pydantic import ValidationError
 
 from opencosmo.dtypes import read_map_header
 from opencosmo.header import read_header
+from opencosmo.uuid import coerce_to_uuid, get_dataset_uuid
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+    from uuid import UUID
 
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.mpi import MPI
@@ -47,9 +49,58 @@ class GroupLayout:
     linked_target_names: tuple[str, ...]
     """Sorted tuple of linked target name prefixes (from /data_linked _start/_size suffixes)."""
 
-    uuid: UUID | None = None
-    """UUID for dataset, used in linking. Absent on files written before dataset
-    identity existed, which simply cannot participate in a mapping."""
+    uuid: UUID
+    """Identity of this dataset's /data group. Read from the group's ``main_uuid``
+    attribute when present, otherwise deterministically synthesized from the resolved
+    file path and the group path so every MPI rank agrees without communication."""
+
+    has_persistent_uuid: bool
+    """Whether ``uuid`` came from an on-disk ``main_uuid`` attribute. Synthesized
+    UUIDs must never satisfy a /map endpoint check, so consumers that resolve
+    mapping files filter on this rather than on ``uuid``."""
+
+    link_layout: LinkLayout | None = None
+    """Frozen /data_linked layout when this group has one, otherwise None."""
+
+
+class LinkSlotKind(StrEnum):
+    """The index representation used by a /data_linked slot."""
+
+    CHUNKED = "chunked"
+    SIMPLE = "simple"
+
+
+@dataclass(frozen=True)
+class LinkSlot:
+    """Frozen layout of one prefix-keyed /data_linked slot."""
+
+    prefix: str
+    """The slot prefix, retained verbatim from the on-disk dataset names."""
+
+    kind: LinkSlotKind
+    """Whether this slot uses a start/size pair or a simple idx array."""
+
+    dataset_names: tuple[str, ...]
+    """Verbatim on-disk dataset names, in representation order."""
+
+    length: int
+    """Number of rows in this slot's index representation."""
+
+
+@dataclass(frozen=True)
+class LinkLayout:
+    """Frozen layout of a /data_linked group for structure links.
+
+    Slots are keyed by their verbatim prefixes because /data_linked stores flat
+    sibling datasets rather than UUID-named slot groups. The recorded names let a
+    later reader re-open the exact datasets without reconstructing their spelling.
+    """
+
+    path: str
+    """In-file path of the /data_linked group, e.g. "/data_linked"."""
+
+    slots: tuple[LinkSlot, ...]
+    """Sorted prefix-keyed link slots in this group."""
 
 
 @dataclass(frozen=True)
@@ -141,26 +192,6 @@ def _iter_ancestors(group_path: str) -> Iterator[str]:
         yield group_path
 
 
-def _coerce_to_uuid(value: str | bytes | np.bytes_ | UUID | None) -> UUID | None:
-    """
-    Coerce a value to UUID, handling multiple input formats.
-
-    Returns None if the value is None, not a UUID-like type, or unparseable.
-    """
-    if value is None:
-        return None
-    if isinstance(value, UUID):
-        return value
-    if isinstance(value, (bytes, np.bytes_)):
-        value = value.decode("utf-8")
-    if isinstance(value, str):
-        try:
-            return UUID(value)
-        except (ValueError, AttributeError):
-            return None
-    return None
-
-
 def _verify_map_array(array: h5py.Dataset | None, where: str) -> int:
     """Validate a direct, simple mapping array without reading its values."""
     if not isinstance(array, h5py.Dataset):
@@ -200,6 +231,86 @@ def _verify_slot(slot_group: h5py.Group, where: str) -> int:
     return array.shape[0]
 
 
+def _read_link_layout(
+    link_path: str,
+    link_group: h5py.Group,
+) -> LinkLayout:
+    """Resolve one /data_linked group into a frozen LinkLayout.
+
+    Link slots are flat sibling datasets, unlike the group-based /map slots. Reads
+    names, dtypes, and shapes only. Raises ValueError on malformed structure;
+    ``discover_file`` converts it to ``FileLayout.error`` inside the collective.
+    """
+    slot_datasets: dict[str, dict[str, str]] = {}
+    for name, item in link_group.items():
+        suffix = next(
+            (suffix for suffix in ("_start", "_size", "_idx") if name.endswith(suffix)),
+            None,
+        )
+        where = f"{link_path}/{name}"
+        if suffix is None:
+            raise ValueError(
+                f"{where}: link datasets must end in _start, _size, or _idx"
+            )
+        prefix = name.removesuffix(suffix)
+        if not prefix:
+            raise ValueError(f"{where}: link dataset prefix must not be empty")
+        if not isinstance(item, h5py.Dataset):
+            raise ValueError(f"{where}: expected a dataset")
+        slot_datasets.setdefault(prefix, {})[suffix] = name
+
+    slots: list[LinkSlot] = []
+    for prefix, names in sorted(slot_datasets.items()):
+        where = f"{link_path}/{prefix}"
+        has_start = "_start" in names
+        has_size = "_size" in names
+        has_idx = "_idx" in names
+        if has_start != has_size:
+            missing = "_size" if has_start else "_start"
+            raise ValueError(f"{where}: missing matching {missing} dataset")
+        if has_idx and has_start:
+            raise ValueError(
+                f"{where}: cannot contain both start/size and idx datasets"
+            )
+        if has_start:
+            start_name = names["_start"]
+            size_name = names["_size"]
+            start_length = _verify_map_array(
+                link_group[start_name], f"{link_path}/{start_name}"
+            )
+            size_length = _verify_map_array(
+                link_group[size_name], f"{link_path}/{size_name}"
+            )
+            if start_length != size_length:
+                raise ValueError(
+                    f"{where}: start and size arrays must have the same length"
+                )
+            slots.append(
+                LinkSlot(
+                    prefix=prefix,
+                    kind=LinkSlotKind.CHUNKED,
+                    dataset_names=(start_name, size_name),
+                    length=start_length,
+                )
+            )
+        elif has_idx:
+            idx_name = names["_idx"]
+            slots.append(
+                LinkSlot(
+                    prefix=prefix,
+                    kind=LinkSlotKind.SIMPLE,
+                    dataset_names=(idx_name,),
+                    length=_verify_map_array(
+                        link_group[idx_name], f"{link_path}/{idx_name}"
+                    ),
+                )
+            )
+        else:
+            raise ValueError(f"{where}: link slot has no index datasets")
+
+    return LinkLayout(path=link_path, slots=tuple(slots))
+
+
 def _read_map_layout(
     map_path: str,
     map_group: h5py.Group,
@@ -214,7 +325,7 @@ def _read_map_layout(
     """
     attrs = dict(map_group.attrs)
 
-    reference = _coerce_to_uuid(attrs.get("reference"))
+    reference = coerce_to_uuid(attrs.get("reference"))
     if reference is None:
         raise ValueError(
             f"Malformed map at {map_path}: missing or invalid 'reference' attribute"
@@ -240,7 +351,7 @@ def _read_map_layout(
     if isinstance(primary_group := map_group.get("primary"), h5py.Group):
         for name, slot in primary_group.items():
             where = f"{map_path}/primary/{name}"
-            target = _coerce_to_uuid(name)
+            target = coerce_to_uuid(name)
             if target is None:
                 raise ValueError(f"{where}: group name is not a UUID")
             if not isinstance(slot, h5py.Group):
@@ -265,7 +376,7 @@ def _read_map_layout(
             parts = name.split("__")
             if len(parts) != 2:
                 raise ValueError(f"{where}: name is not '<uuid_a>__<uuid_b>'")
-            uuid_a, uuid_b = (_coerce_to_uuid(p) for p in parts)
+            uuid_a, uuid_b = (coerce_to_uuid(p) for p in parts)
             if uuid_a is None or uuid_b is None:
                 raise ValueError(f"{where}: endpoint names are not UUIDs")
             if not isinstance(pair, h5py.Group):
@@ -443,24 +554,36 @@ def discover_file(path: Path) -> FileLayout:
                 index_path = f"{group_parent}index"
                 has_index = index_path in file_map
 
-                # Check for data_linked group and extract linked target names.
-                linked_target_names_set = set()
+                # Check for data_linked group and extract its frozen slot layout.
+                linked_target_names_set: set[str] = set()
+                link_layout: LinkLayout | None = None
                 data_linked_path = f"{group_parent}data_linked"
                 if data_linked_path in file_map:
                     data_linked_group = file_map[data_linked_path]
                     if isinstance(data_linked_group, h5py.Group):
-                        for key in data_linked_group.keys():
-                            if key.endswith("_start"):
-                                target_name = key.rsplit("_start", 1)[0]
-                                linked_target_names_set.add(target_name)
-                            elif key.endswith("_size"):
-                                target_name = key.rsplit("_size", 1)[0]
-                                linked_target_names_set.add(target_name)
+                        try:
+                            link_layout = _read_link_layout(
+                                data_linked_path, data_linked_group
+                            )
+                        except ValueError as e:
+                            return FileLayout(path=path, groups=(), error=str(e))
+                        linked_target_names_set.update(
+                            slot.prefix for slot in link_layout.slots
+                        )
 
                 linked_target_names = tuple(sorted(linked_target_names_set))
-                group_attrs = dict(file_map[data_path].attrs)
-                group_uuid_raw = group_attrs.get("main_uuid")
-                group_uuid = _coerce_to_uuid(group_uuid_raw)
+                # Hash the /data group itself so parent groups' path prefixes do not
+                # affect identity.
+                data_group = file_map[data_path]
+                if not isinstance(data_group, h5py.Group):
+                    return FileLayout(
+                        path=path,
+                        groups=(),
+                        error=f"Expected /data group at {data_path}",
+                    )
+
+                persistent_uuid = coerce_to_uuid(data_group.attrs.get("main_uuid"))
+                group_uuid = get_dataset_uuid(data_group)
 
                 group_layouts.append(
                     GroupLayout(
@@ -468,11 +591,13 @@ def discover_file(path: Path) -> FileLayout:
                         header_path=governing_header_path,
                         header=header,
                         uuid=group_uuid,
+                        has_persistent_uuid=persistent_uuid is not None,
                         column_names=column_names,
                         column_dtypes=column_dtypes,
                         row_count=row_count,
                         has_index=has_index,
                         linked_target_names=linked_target_names,
+                        link_layout=link_layout,
                     )
                 )
 

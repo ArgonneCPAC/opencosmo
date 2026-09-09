@@ -65,6 +65,8 @@ def prepare_matched_datasets(
         mapping = get_mapping(match_set, source, name, index)
         if mapping is None:
             raise ValueError(f"Unable to find mapping for dataset {dataset}")
+        if not isinstance(mapping, np.ndarray):
+            raise ValueError("Dataset matching does not support chunked mappings")
         rows_to_keep = rows_to_keep & (mapping >= 0)
         mappings[name] = mapping
 
@@ -74,6 +76,7 @@ def prepare_matched_datasets(
     # The np.isin pass below is a required precondition for the unchecked
     # searchsorted in the final loop: it guarantees every value in `wanted`
     # is present in `target_index`, making the lookup safe without bounds checks.
+
     for name, mapping in mappings.items():
         mappings_to_keep = mapping[rows_to_keep]
         mappings_in_index = np.isin(

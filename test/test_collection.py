@@ -1424,24 +1424,3 @@ def test_data_cached_after_objects(halo_paths):
     uuid_data = cache.get_data({(gpe_uuid, "gpe")})
     assert uuid_data.get(gpe_uuid, {}).get("gpe") is not None
     assert dataset.descriptions["gpe"] != "None"
-
-
-def test_modify_metadata_column(halo_paths):
-    ds = oc.open(*halo_paths)
-    galaxyproperties_start = ds["halo_properties"].get_metadata(
-        "galaxyproperties_start"
-    )
-    updated_galprops = oc.col("galaxyproperties_start") + 1000
-
-    ds = ds.with_new_columns(
-        "halo_properties", galaxyproperties_start=updated_galprops, allow_overwrite=True
-    )
-    updated_galaxyproperties_start = ds["halo_properties"].get_metadata(
-        "galaxyproperties_start"
-    )
-    assert np.all(
-        (galaxyproperties_start["galaxyproperties_start"] + 1000)
-        == updated_galaxyproperties_start["galaxyproperties_start"]
-    )
-    assert "galaxyproperties_start" not in ds["halo_properties"].columns
-    assert "galaxyproperties_start" not in ds["halo_properties"].get_data("numpy")

@@ -1,5 +1,14 @@
 name: test opencosmo
 on: workflow_call
+
+# Azure-hosted runners sporadically expose the MANA NIC as an RDMA verbs
+# device (mana_0). UCX (used by the MPICH that setup-mpi installs) then tries
+# to open a UD verbs transport on it and aborts MPI_Init with an I/O error.
+# Restricting UCX to shared-mem/self/TCP avoids the verbs path entirely.
+env:
+  UCX_TLS: sm,self,tcp
+  UCX_NET_DEVICES: lo
+
 jobs:
   get-test-data:
     runs-on: ubuntu-latest

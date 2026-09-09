@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     import h5py
-    from opencosmo.header import OpenCosmoHeader
     from opencosmo.io.schema import Schema
 
     from opencosmo.index import DataIndex
@@ -50,17 +49,12 @@ class Hdf5Handler:
         cls,
         columns: list[h5py.Dataset],
         index: Optional[DataIndex] = None,
-        metadata_group: Optional[str] = None,
         load_conditions: Optional[dict[str, bool]] = None,
     ):
-        groups = {"data"}
-        if metadata_group:
-            groups.add(metadata_group)
-
         all_columns = {
             col.name.split("/")[-1]: col
             for col in columns
-            if col.name.split("/")[-2] in groups
+            if col.name.split("/")[-2] == "data"
         }
 
         lengths = set(len(col) for col in all_columns.values())
@@ -142,32 +136,17 @@ class Hdf5Handler:
     def make_schema(
         self,
         columns: Iterable[str],
-        metadata_columns: set[str] = set(),
-        header: Optional[OpenCosmoHeader] = None,
-    ) -> tuple[Schema, Optional[Schema]]:
+    ) -> Schema:
         columns = set(columns)
         data_writers = {}
-        for column_name in columns - metadata_columns:
+        for column_name in columns:
             column = self.__columns[column_name]
             data_writers[column_name] = ColumnWriter.from_h5_dataset(
                 column, self.__index, attrs=dict(column.attrs)
             )
         data_schema = make_schema("data", FileEntry.COLUMNS, columns=data_writers)
 
-        raw_meta = columns & metadata_columns
-        if not raw_meta:
-            return data_schema, make_schema("metadata", FileEntry.EMPTY)
-
-        group_name = self.__columns[next(iter(raw_meta))].parent.name.split("/")[-1]
-        metadata_writers = {}
-        for column_name in raw_meta:
-            column = self.__columns[column_name]
-            metadata_writers[column_name] = ColumnWriter.from_h5_dataset(
-                column, self.__index, attrs=dict(column.attrs)
-            )
-        return data_schema, make_schema(
-            group_name, FileEntry.COLUMNS, columns=metadata_writers
-        )
+        return data_schema
 
     def get_data(self, columns: Iterable[str]) -> dict[str, np.ndarray]:
         """ """

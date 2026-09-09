@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from opencosmo.io.discover import discover_all
+from opencosmo.io.discover import discover_all, discover_file
 from opencosmo.mpi import get_comm_world
 from pytest_mpi.parallel_assert import parallel_assert
 
@@ -158,3 +158,32 @@ def test_discover_all_sorted_determinism(test_data):
         path_strs == sorted_path_strs,
         f"Paths not sorted. Got: {path_strs}",
     )
+
+
+@pytest.mark.parallel(nprocs=4)
+def test_dataset_uuids_agree_across_ranks(test_data):
+    """Test that each rank computes identical synthesized dataset identities."""
+    comm = get_comm_world()
+    if comm is None:
+        pytest.skip("MPI not available")
+
+    all_paths = sorted(
+        test_data.lightcone.step(600).all + test_data.lightcone.step(601).all
+    )
+    layouts = discover_all(all_paths, comm=comm)
+    gathered_layout_uuids = comm.allgather(
+        [group.uuid for layout in layouts for group in layout.groups]
+    )
+
+    for rank, uuids in enumerate(gathered_layout_uuids):
+        parallel_assert(uuids == gathered_layout_uuids[0], f"Rank {rank} UUIDs differ")
+
+    # discover_all allgathers layouts, so this direct call is the load-bearing check:
+    # it makes each rank compute an identity for a file owned by another rank.
+    direct_uuids = [group.uuid for group in discover_file(all_paths[1]).groups]
+    gathered_direct_uuids = comm.allgather(direct_uuids)
+
+    for rank, uuids in enumerate(gathered_direct_uuids):
+        parallel_assert(
+            uuids == gathered_direct_uuids[0], f"Rank {rank} direct UUIDs differ"
+        )

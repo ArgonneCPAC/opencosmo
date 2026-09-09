@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from opencosmo.header import read_header, write_header
+from opencosmo.io.discover import discover_file
 
 import opencosmo as oc
 from opencosmo import col, write
@@ -37,6 +38,20 @@ def test_write_dataset(halo_properties_path, tmp_path):
 
     new_ds = oc.open(new_path)
     assert all(ds.get_data() == new_ds.get_data())
+
+
+def test_write_mints_fresh_persistent_dataset_uuid(halo_properties_path, tmp_path):
+    """Test that writing mints a new on-disk dataset identity."""
+    source = oc.open(halo_properties_path)
+    output_path = tmp_path / "haloproperties.hdf5"
+    write(output_path, source)
+
+    reopened = oc.open(output_path)
+    output_group = discover_file(output_path).groups[0]
+
+    assert reopened.uuid != source.uuid
+    assert output_group.has_persistent_uuid
+    assert reopened.uuid == output_group.uuid
 
 
 def test_overwrite(halo_properties_path, tmp_path):

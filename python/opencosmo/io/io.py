@@ -191,9 +191,13 @@ def write(path: Path, dataset: Writeable, overwrite=False, **schema_kwargs) -> N
     if mpiio is not None:
         return mpiio.write_parallel(path, schema)
 
-    from opencosmo.collection.simulation.io import lower_simulation_collection_maps
+    from opencosmo.io.schema import FileEntry
+    from opencosmo.mapping.write import lower_collection_coordinates
 
-    schema = lower_simulation_collection_maps(schema)
+    if schema.type == FileEntry.SIMULATION_COLLECTION:
+        schema = lower_collection_coordinates(schema, canonical_raw_order=True)
+    elif schema.type == FileEntry.STRUCTURE_COLLECTION:
+        schema = lower_collection_coordinates(schema, canonical_raw_order=False)
     from opencosmo.io.verify import verify_structure
 
     verify_structure(schema)

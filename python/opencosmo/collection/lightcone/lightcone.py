@@ -57,6 +57,8 @@ from opencosmo.plugins.contexts import (
 from opencosmo.plugins.hook import fold
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     import astropy.units as u  # type: ignore
     import numpy.typing as npt
     from astropy.coordinates import SkyCoord
@@ -202,16 +204,10 @@ class Lightcone(dict):
         cols.extend(name for name in self.__scope.names() if name not in cols)
         return cols
 
+    # Internal identity used by link/mapping resolution.
     @property
-    def meta_columns(self) -> list[str]:
-        """
-        The names of the columns in this dataset.
-
-        Returns
-        -------
-        columns: list[str]
-        """
-        return next(iter(self.values())).meta_columns
+    def uuid(self) -> UUID:
+        return next(iter(self.values())).uuid
 
     @cached_property
     def descriptions(self) -> dict[str, Optional[str]]:
@@ -395,19 +391,6 @@ class Lightcone(dict):
             return next(iter(dict(vstacked).values()))
 
         return vstacked
-
-    def get_metadata(self, columns: str | list[str] = [], ignore_sort: bool = False):
-        data = [ds.get_metadata(columns) for ds in self.values()]
-
-        output = {}
-        for key in data[0].keys():
-            output[key] = np.concatenate([d[key] for d in data])
-        if ignore_sort or self.__sort_key is None:
-            return output
-        order = np.argsort(self.select(self.__sort_key[0]).get_data("numpy"))
-        if self.__sort_key[1]:
-            order = order[::-1]
-        return {name: arr[order] for name, arr in output.items()}
 
     @property
     @deprecated(
@@ -936,9 +919,7 @@ class Lightcone(dict):
 
         return evaluate
 
-    def rows(
-        self, metadata_columns=[]
-    ) -> Generator[dict[str, float | u.Quantity], None, None]:
+    def rows(self) -> Generator[dict[str, float | u.Quantity], None, None]:
         """
         Iterate over the rows in the dataset. Rows are returned as a dictionary
         For performance, it is recommended to first select the columns you need to
@@ -949,9 +930,7 @@ class Lightcone(dict):
         row : dict
             A dictionary of values for each row in the dataset with units.
         """
-        yield from chain.from_iterable(
-            v.rows(metadata_columns=metadata_columns) for v in self.values()
-        )
+        yield from chain.from_iterable(v.rows() for v in self.values())
 
     def select(
         self,

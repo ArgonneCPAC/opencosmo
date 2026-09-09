@@ -3,14 +3,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from opencosmo.mapping.mapping import DatasetMatchSet
+from opencosmo.io.discover import LinkSlotKind
+from opencosmo.mapping.mapping import ChunkedSlot, DatasetMatchSet
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     import h5py
-    from opencosmo.io.discover import MapLayout
-    from opencosmo.mapping.mapping import SimpleH5pyIndex
+    from opencosmo.io.discover import LinkLayout, MapLayout
+    from opencosmo.mapping.mapping import MapSlot, SimpleH5pyIndex
 
 
 def read_index_group(group: h5py.Group) -> "SimpleH5pyIndex":
@@ -111,4 +112,71 @@ def read_match_set(
         reference_source=layout.reference,
         primary_maps=primary_maps,
         aux_maps=aux_maps,
+    )
+
+
+def read_link_set(
+    source_group: h5py.Group,
+    layout: "LinkLayout",
+    source_uuid: UUID,
+    target_uuids: dict[str, UUID],
+) -> DatasetMatchSet | None:
+    """
+    Resolve a live /data_linked group into a DatasetMatchSet.
+
+    ``layout`` comes from discovery, which has already validated the full
+    /data_linked structure. This function therefore only filters slots by opened
+    target prefix and resolves their live h5py handles. Link mappings have a pure
+    star topology: ``source_uuid`` is the reference source and every retained slot
+    maps directly from it to one target. Links never invert or compose, so no
+    auxiliary maps are created.
+
+    Slot datasets are accessed by the verbatim on-disk names recorded in
+    ``layout``. Names are never reconstructed from prefixes, because their on-disk
+    spelling is the layout's authority. The returned datasets remain live and lazy:
+    this reader does not read any link values, since discovery already validated
+    their structure and link arrays may be structure-scale.
+
+    Parameters
+    ----------
+    source_group : h5py.Group
+        The live /data_linked group. It is indexed only by the dataset names
+        recorded in ``layout``.
+    layout : LinkLayout
+        The frozen layout produced during discovery for ``source_group``.
+    source_uuid : UUID
+        UUID of the properties dataset owning the link group.
+    target_uuids : dict[str, UUID]
+        Mapping from on-disk link prefixes to UUIDs of target datasets that were
+        opened by the caller. Slots whose prefixes are absent are omitted.
+
+    Returns
+    -------
+    DatasetMatchSet | None
+        A source-to-target-only match set with live slot datasets, or None if no
+        target slots remain after filtering.
+    """
+
+    primary_maps: dict[UUID, MapSlot] = {}
+    for slot in layout.slots:
+        target_uuid = target_uuids.get(slot.prefix)
+        if target_uuid is None:
+            continue
+        if slot.kind is LinkSlotKind.CHUNKED:
+            start_name, size_name = slot.dataset_names
+            primary_maps[target_uuid] = ChunkedSlot(
+                source_group[start_name],  # type: ignore[arg-type]
+                source_group[size_name],  # type: ignore[arg-type]
+            )
+        else:
+            (idx_name,) = slot.dataset_names
+            primary_maps[target_uuid] = source_group[idx_name]  # type: ignore[assignment]
+
+    if not primary_maps:
+        return None
+
+    return DatasetMatchSet(
+        reference_source=source_uuid,
+        primary_maps=primary_maps,
+        aux_maps={},
     )

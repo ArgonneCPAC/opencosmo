@@ -21,6 +21,8 @@ from opencosmo.dataset import operations as dsops
 from opencosmo.deprecated import deprecated
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from opencosmo.column.column import (
         ColumnMask,
         ConstructedColumn,
@@ -123,10 +125,6 @@ class Dataset:
         return self.__state.columns
 
     @property
-    def meta_columns(self) -> list[str]:
-        return self.__state.meta_columns
-
-    @property
     def descriptions(self) -> dict[str, Optional[str]]:
         """
         Return the descriptions (if any) of the columns in this dataset as a dictonary.
@@ -185,6 +183,11 @@ class Dataset:
     def tree(self) -> Optional[Tree]:
         return self.__state.tree
 
+    # Internal identity used by link/mapping resolution.
+    @property
+    def uuid(self) -> UUID:
+        return self.__state.uuid
+
     @property
     @deprecated(
         msg="Accessing data through the .data attribute is deprecated and will be removed in a future version. Use get_data()",
@@ -205,17 +208,10 @@ class Dataset:
         # Also the point is that there's MORE data than just the table
         return self.get_data("astropy")
 
-    def get_metadata(self, columns: str | list[str] = [], ignore_sort: bool = False):
-        if isinstance(columns, str):
-            columns = [columns]
-
-        return st.get_metadata(self.__state, columns, ignore_sort)
-
     def get_data(
         self,
         format="astropy",
         unpack=True,
-        metadata_columns=None,
         wrap_single=False,
         **kwargs,
     ) -> OpenCosmoData:
@@ -261,9 +257,7 @@ class Dataset:
                 "The `output` argument of the `get_data` function has been renamed to `format`. Passing the `output` argument will cause a failure in a future version"
             )
             format = kwargs["output"]
-        return dsops.get_data(
-            self.__state, format, unpack, wrap_single, metadata_columns, **kwargs
-        )
+        return dsops.get_data(self.__state, format, unpack, wrap_single, **kwargs)
 
     def bound(self, region: Region, select_by: Optional[str] = None):
         """
@@ -434,7 +428,6 @@ class Dataset:
     def rows(
         self,
         include_units: bool = True,
-        metadata_columns=[],
     ) -> Generator[Mapping[str, float | u.Quantity | np.ndarray]]:
         """
         Iterate over the rows in the dataset. Rows are returned as a dictionary
@@ -453,7 +446,7 @@ class Dataset:
             A dictionary of values for each row in the dataset with units.
 
         """
-        yield from dsops.rows(self.__state, metadata_columns, include_units)
+        yield from dsops.rows(self.__state, include_units)
 
     def select(
         self,

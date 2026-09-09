@@ -89,20 +89,18 @@ def write_parallel(file: Path, file_schema: Schema):
     if len(paths) != 1:
         raise ValueError("Different ranks recieved a different path to output to!")
 
-    try:
-        verify_structure(
-            file_schema, allow_unresolved_maps=True
-        )  # Tier 1: structural correctness
-        # Tier 2: does this rank actually contribute any rows?
-        state = (
-            CombineState.VALID
-            if schema_data_length(file_schema) > 0
-            else CombineState.ZERO_LENGTH
-        )
-        results = comm.allgather(state)
-    except ValueError:
-        results = comm.allgather(CombineState.INVALID)
-        raise
+    if schema_data_length(file_schema) == 0:
+        results = comm.allgather(CombineState.ZERO_LENGTH)
+    else:
+        try:
+            verify_structure(
+                file_schema, allow_unresolved_maps=True
+            )  # Tier 1: structural correctness
+            # Tier 2: does this rank actually contribute any rows?
+            results = comm.allgather(CombineState.VALID)
+        except ValueError:
+            results = comm.allgather(CombineState.INVALID)
+            raise
     if any(rs == CombineState.INVALID for rs in results):
         raise ValueError("One or more ranks recieved invalid schemas!")
     has_data = [i for i, state in enumerate(results) if state == CombineState.VALID]

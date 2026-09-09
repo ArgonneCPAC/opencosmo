@@ -6,20 +6,319 @@ from uuid import UUID
 import h5py
 import numpy as np
 import pytest
-from opencosmo.io.discover import _read_map_layout, discover_file
-from opencosmo.mapping.mapping import DatasetMatchSet, get_mapping
-from opencosmo.mapping.read import read_match_set
+from opencosmo.io.discover import (
+    LinkSlotKind,
+    _read_link_layout,
+    _read_map_layout,
+    discover_file,
+)
+from opencosmo.mapping.mapping import (
+    ChunkedSlot,
+    DatasetMatchSet,
+    get_auxillary_mapping,
+    get_mapping,
+    get_primary_mapping,
+    get_slot_sizes,
+    rebuild_single_with_new_source,
+    rebuild_single_with_source,
+    rebuild_target_index,
+)
+from opencosmo.mapping.read import read_link_set, read_match_set
+
+from opencosmo.index import coalesce_chunks
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from opencosmo.io.discover import MapLayout
+    from conftest import TestDataPaths
+    from opencosmo.io.discover import LinkLayout, MapLayout
+
+    from opencosmo.index import DataIndex
 
 # Fixed UUIDs used across tests.
 _REF = UUID("00000000-0000-0000-0000-000000000001")
 _A = UUID("00000000-0000-0000-0000-000000000002")
 _B = UUID("00000000-0000-0000-0000-000000000003")
 _C = UUID("00000000-0000-0000-0000-000000000004")
+
+
+# Frozen copies of the pre-migration index rebuilders that used to live in
+# collection/structure/handler.py. They are the oracle that rebuild_target_index
+# must keep agreeing with, so they are pinned here rather than imported.
+def rebuild_row_index(
+    original_metadata_column: np.ndarray,
+    index_into_original: np.ndarray,
+) -> np.ndarray:
+    valid_rows = original_metadata_column >= 0
+    index = np.full(len(original_metadata_column), -1, dtype=np.int64)
+    index[valid_rows] = np.arange(0, sum(valid_rows))
+    index_to_take = index[index_into_original]
+    return index_to_take[index_to_take >= 0]
+
+
+def rebuild_chunk_index(
+    original_size_column: np.ndarray,
+    index_into_original: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    chunk_boundaries = np.zeros(len(original_size_column) + 1, dtype=np.int64)
+    _ = np.cumsum(original_size_column, out=chunk_boundaries[1:])
+    valid_rows = original_size_column[index_into_original] > 0
+
+    starts = chunk_boundaries[index_into_original[valid_rows]]
+    sizes = original_size_column[index_into_original[valid_rows]]
+
+    return coalesce_chunks(starts, sizes)
+
+
+def _make_chunked_match_set(file: h5py.File, sizes: np.ndarray) -> DatasetMatchSet:
+    start = file.create_dataset("start", data=np.array([0, 2, 2, 5, 7], dtype=np.int64))
+    size = file.create_dataset("size", data=sizes)
+    return DatasetMatchSet(_REF, {_A: ChunkedSlot(start, size)}, {})
+
+
+def _make_link_group(
+    file: h5py.File, slots: dict[str, np.ndarray]
+) -> tuple[h5py.Group, LinkLayout]:
+    """Write flat link datasets and parse their layout through discovery."""
+    link_group = file.create_group("data_linked")
+    for name, values in slots.items():
+        link_group.create_dataset(name, data=values)
+    return link_group, _read_link_layout("/data_linked", link_group)
+
+
+def test_read_link_set_chunked_slot_maps_source_rows(tmp_path: Path) -> None:
+    starts = np.array([0, 2, 2, 5], dtype=np.int64)
+    sizes = np.array([2, 0, 3, 1], dtype=np.uint32)
+    source_index = np.array([3, 0, 2, 1], dtype=np.int64)
+    with h5py.File(tmp_path / "links.hdf5", "w") as file:
+        link_group, layout = _make_link_group(
+            file,
+            {
+                "particles_start": starts,
+                "particles_size": sizes,
+            },
+        )
+        match_set = read_link_set(link_group, layout, _REF, {"particles": _A})
+
+        assert match_set is not None
+        result = get_primary_mapping(match_set, _REF, _A, source_index)
+
+    assert isinstance(match_set.primary_maps[_A], ChunkedSlot)
+    assert isinstance(result, tuple)
+    expected = coalesce_chunks(
+        starts[source_index][sizes[source_index] > 0],
+        sizes[source_index][sizes[source_index] > 0],
+    )
+    np.testing.assert_array_equal(result[0], expected[0])
+    np.testing.assert_array_equal(result[1], expected[1])
+
+
+def test_read_link_set_idx_slot_resolves_simple_slot(tmp_path: Path) -> None:
+    with h5py.File(tmp_path / "links.hdf5", "w") as file:
+        link_group, layout = _make_link_group(
+            file, {"galaxies_idx": np.array([4, -1, 2], dtype=np.int64)}
+        )
+        match_set = read_link_set(link_group, layout, _REF, {"galaxies": _A})
+
+        assert match_set is not None
+        slot = match_set.primary_maps[_A]
+        assert not isinstance(slot, ChunkedSlot)
+        result = get_primary_mapping(match_set, _REF, _A, np.array([2, 0]))
+        assert slot.name == "/data_linked/galaxies_idx"
+
+    np.testing.assert_array_equal(result, [2, 4])
+
+
+def test_read_link_set_mixed_slots_and_source_topology(tmp_path: Path) -> None:
+    with h5py.File(tmp_path / "links.hdf5", "w") as file:
+        link_group, layout = _make_link_group(
+            file,
+            {
+                "profiles_start": np.array([0, 2], dtype=np.int64),
+                "profiles_size": np.array([2, 1], dtype=np.uint32),
+                "particles_idx": np.array([3, 1], dtype=np.int64),
+            },
+        )
+        match_set = read_link_set(
+            link_group, layout, _REF, {"profiles": _A, "particles": _B}
+        )
+
+        assert match_set is not None
+        assert isinstance(match_set.primary_maps[_A], ChunkedSlot)
+        assert not isinstance(match_set.primary_maps[_B], ChunkedSlot)
+        assert match_set.reference_source == _REF
+        assert match_set.aux_maps == {}
+
+
+def test_read_link_set_skips_unopened_targets_and_returns_none(tmp_path: Path) -> None:
+    with h5py.File(tmp_path / "links.hdf5", "w") as file:
+        link_group, layout = _make_link_group(
+            file,
+            {
+                "profiles_start": np.array([0], dtype=np.int64),
+                "profiles_size": np.array([1], dtype=np.uint32),
+                "particles_idx": np.array([0], dtype=np.int64),
+            },
+        )
+        match_set = read_link_set(link_group, layout, _REF, {"profiles": _A})
+        missing = read_link_set(link_group, layout, _REF, {})
+
+    assert match_set is not None
+    assert set(match_set.primary_maps) == {_A}
+    assert missing is None
+
+
+def test_read_link_set_real_hacc_chunked_slot(test_data: TestDataPaths) -> None:
+    path = test_data.snapshot.primary.halo_properties
+    if not path.is_file():
+        pytest.skip("repository test data is not available")
+
+    layout = discover_file(path)
+    assert layout.error is None
+    link_layout = layout.groups[0].link_layout
+    assert link_layout is not None
+    chunked_slot = next(
+        slot for slot in link_layout.slots if slot.kind is LinkSlotKind.CHUNKED
+    )
+    target_uuid = _A
+
+    with h5py.File(path, "r") as file:
+        link_group = file[link_layout.path]
+        match_set = read_link_set(
+            link_group, link_layout, _REF, {chunked_slot.prefix: target_uuid}
+        )
+        assert match_set is not None
+        start_name, size_name = chunked_slot.dataset_names
+        source_index = np.arange(min(8, chunked_slot.length), dtype=np.int64)
+        starts = link_group[start_name][source_index]
+        sizes = link_group[size_name][source_index].astype(np.int64)
+        result = get_primary_mapping(match_set, _REF, target_uuid, source_index)
+
+    assert isinstance(result, tuple)
+    expected = coalesce_chunks(starts[sizes > 0], sizes[sizes > 0])
+    np.testing.assert_array_equal(result[0], expected[0])
+    np.testing.assert_array_equal(result[1], expected[1])
+
+
+def test_chunked_primary_mapping_round_trips_and_coalesces(tmp_path: Path) -> None:
+    with h5py.File(tmp_path / "mapping.hdf5", "w") as file:
+        match_set = _make_chunked_match_set(
+            file, np.array([2, 0, 3, 2, 1], dtype=np.uint32)
+        )
+        index = np.arange(5, dtype=np.int64)
+
+        primary = get_primary_mapping(match_set, _REF, _A, index)
+        mapped = get_mapping(match_set, _REF, _A, index)
+
+    assert isinstance(primary, tuple)
+    assert mapped is not None
+    assert isinstance(mapped, tuple)
+    np.testing.assert_array_equal(primary[0], [0])
+    np.testing.assert_array_equal(primary[1], [8])
+    np.testing.assert_array_equal(mapped[0], primary[0])
+    np.testing.assert_array_equal(mapped[1], primary[1])
+    assert len(primary[0]) != len(index)
+
+
+def test_chunked_mappings_reject_unsupported_routes(tmp_path: Path) -> None:
+    with h5py.File(tmp_path / "mapping.hdf5", "w") as file:
+        match_set = _make_chunked_match_set(
+            file, np.array([1, 1, 1, 1, 1], dtype=np.int64)
+        )
+        simple = file.create_dataset("simple", data=np.arange(5, dtype=np.int64))
+        aux_source = file.create_dataset("aux_source", data=[0])
+        aux_target = file.create_dataset("aux_target", data=[0])
+        match_set = DatasetMatchSet(
+            _REF,
+            {_A: match_set.primary_maps[_A], _B: simple},
+            {(_REF, _A): (aux_source, aux_target)},
+        )
+        index = np.array([0], dtype=np.int64)
+
+        with pytest.raises(ValueError, match="reference-to-target"):
+            get_primary_mapping(match_set, _A, _REF, index)
+        with pytest.raises(ValueError, match="reference-to-target"):
+            get_primary_mapping(match_set, _A, _B, index)
+        with pytest.raises(ValueError, match="reference-to-target"):
+            get_auxillary_mapping(match_set, _REF, _A, index)
+
+
+def test_rebuild_target_index_matches_structure_rebuilders(tmp_path: Path) -> None:
+    old_source_index = np.array([4, 0, 3, 1, 2], dtype=np.int64)
+    new_source_index = np.array([1, 4, 2], dtype=np.int64)
+    index_into_original = np.array([3, 0, 4], dtype=np.int64)
+    with h5py.File(tmp_path / "mapping.hdf5", "w") as file:
+        chunked_match_set = _make_chunked_match_set(
+            file, np.array([2, 1, 3, 0, 4], dtype=np.uint32)
+        )
+        simple = file.create_dataset("simple", data=[8, -1, 12, 9, 10])
+        simple_match_set = DatasetMatchSet(_REF, {_A: simple}, {})
+
+        chunked = rebuild_target_index(
+            chunked_match_set, _A, old_source_index, new_source_index
+        )
+        simple_result = rebuild_target_index(
+            simple_match_set, _A, old_source_index, new_source_index
+        )
+
+    expected_chunked = rebuild_chunk_index(
+        np.array([4, 2, 0, 1, 3], dtype=np.int64), index_into_original
+    )
+    expected_simple = rebuild_row_index(
+        np.array([10, 8, 9, -1, 12], dtype=np.int64), index_into_original
+    )
+    assert isinstance(chunked, tuple)
+    np.testing.assert_array_equal(chunked[0], expected_chunked[0])
+    np.testing.assert_array_equal(chunked[1], expected_chunked[1])
+    np.testing.assert_array_equal(simple_result, expected_simple)
+
+
+def test_chunked_slot_sizes_and_rebuilt_indices_are_signed_int64(
+    tmp_path: Path,
+) -> None:
+    with h5py.File(tmp_path / "mapping.hdf5", "w") as file:
+        match_set = _make_chunked_match_set(
+            file, np.array([2, 0, 3, 2, 1], dtype=np.uint32)
+        )
+        simple = file.create_dataset("simple", data=np.arange(5, dtype=np.int64))
+        simple_match_set = DatasetMatchSet(_REF, {_A: simple}, {})
+        index = np.arange(5, dtype=np.int64)
+
+        sizes = get_slot_sizes(match_set, _A, index)
+        rebuilt = rebuild_target_index(match_set, _A, index, index)
+        with pytest.raises(ValueError, match="do not have a size column"):
+            get_slot_sizes(simple_match_set, _A, index)
+
+    assert sizes.dtype == np.int64
+    assert isinstance(rebuilt, tuple)
+    assert rebuilt[0].dtype == np.int64
+    assert rebuilt[1].dtype == np.int64
+
+
+@pytest.mark.parametrize("writer", ("make_schema", "with_source", "with_new_source"))
+def test_writing_chunked_slots_is_rejected(tmp_path: Path, writer: str) -> None:
+    with h5py.File(tmp_path / "mapping.hdf5", "w") as file:
+        match_set = _make_chunked_match_set(
+            file, np.array([1, 1, 1, 1, 1], dtype=np.int64)
+        ).with_aliases({"reference": _REF, "target": _A})
+        indices: dict[str, DataIndex] = {
+            "reference": np.arange(5, dtype=np.int64),
+            "target": np.arange(5, dtype=np.int64),
+        }
+
+        with pytest.raises(
+            ValueError, match="Writing chunked mappings is not yet supported"
+        ):
+            if writer == "make_schema":
+                match_set.make_schema({"reference": _REF, "target": _A}, indices)
+            elif writer == "with_source":
+                rebuild_single_with_source(
+                    match_set, {"reference": _REF, "target": _A}, indices, "reference"
+                )
+            else:
+                rebuild_single_with_new_source(
+                    match_set, {"reference": _REF, "target": _A}, indices, "target"
+                )
 
 
 def test_missing_primary_route_has_clear_error() -> None:
@@ -64,7 +363,9 @@ def test_get_mapping_directions(tmp_path, source, target, index, expected) -> No
             match_set, source, target, np.asarray(index, dtype=np.int64)
         )
 
-    assert result is not None
+    # Every route in this parametrization uses simple slots, so the result is a
+    # plain index array rather than a chunked (start, size) pair.
+    assert isinstance(result, np.ndarray)
     assert result.dtype == np.int64
     np.testing.assert_array_equal(result, expected)
 

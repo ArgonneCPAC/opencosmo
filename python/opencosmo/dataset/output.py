@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from functools import reduce
 from typing import TYPE_CHECKING, Optional
-from uuid import uuid4
 
 import astropy.units as u
 
@@ -74,30 +73,22 @@ def make_dataset_schema(
     raw_data_handler: DataHandler,
     cache: DataCache,
     columns_to_uuid: dict[str, UUID],
-    meta_columns: list[str],
     header: OpenCosmoHeader,
     tree: Tree | None,
     region: Region,
     raw_index: DataIndex,
     derived_data: dict,
+    dataset_uuid: UUID,
     name: Optional[str] = None,
 ) -> Schema:
     columns = set(columns_to_uuid.keys())
     # header = header.with_region(region)
     raw_columns = columns.intersection(raw_data_handler.columns)
-    raw_meta_columns = raw_columns & set(meta_columns)
-    data_schema, metadata_schema = raw_data_handler.make_schema(
-        raw_columns, raw_meta_columns, header
-    )
+    data_schema = raw_data_handler.make_schema(raw_columns)
 
-    cached_data_schema, cached_metadata_schema = cache.make_schema(
-        columns_to_uuid, meta_columns
-    )
+    cached_data_schema = cache.make_schema(columns_to_uuid)
 
-    data_producers = [
-        prod for prod in producers if not prod.produces.issubset(meta_columns)
-    ]
-    build_derived_writers(data_producers, derived_data, data_schema, cached_data_schema)
+    build_derived_writers(producers, derived_data, data_schema, cached_data_schema)
 
     attributes = {}
     if (load_conditions := raw_data_handler.load_conditions) is not None:
@@ -107,11 +98,7 @@ def make_dataset_schema(
         data_schema,
         cached_data_schema,
     )
-    metadata_schema = combine_with_cached_schema(
-        metadata_schema, cached_metadata_schema
-    )
 
-    dataset_uuid = uuid4()
     new_data_attributes = data_schema.attributes.get("", {}) | {
         "uuid": str(dataset_uuid),
         "main_uuid": str(dataset_uuid),
@@ -121,8 +108,6 @@ def make_dataset_schema(
     data_schema = data_schema._replace(attributes=new_attributes)
 
     children = {"data": data_schema}
-    if metadata_schema.type != FileEntry.EMPTY:
-        children[metadata_schema.name] = metadata_schema
     if name is None:
         name = ""
 

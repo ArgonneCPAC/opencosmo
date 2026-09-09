@@ -277,9 +277,11 @@ def build_from_assignment(
     tuple[oc.Dataset | oc.collection.Collection | None, frozenset[UUID]]
         A 2-tuple of: the built collection or dataset (or None if this scope
         was entirely filtered out by load/if conditions), and the frozenset of
-        UUIDs of the datasets this rank actually opened. Datasets written before
-        dataset identity existed carry uuid=None and are simply absent from the
-        frozenset.
+        UUIDs of the datasets this rank actually opened *as map endpoints*.
+
+        Every dataset now carries a runtime identity, but only datasets with a
+        persistent on-disk ``main_uuid`` are eligible to be resolved as map
+        endpoints and therefore appear in the returned frozenset.
     """
     import h5py
 
@@ -327,33 +329,28 @@ def build_from_assignment(
             prefix = group.path.rstrip("/")
             data_path = f"{prefix}/data"
             index_path = f"{prefix}/index"
-            data_linked_path = f"{prefix}/data_linked"
 
-            # Columns are the /data datasets plus, when present, the /data_linked
-            # datasets. The link columns (<target>_start/_size/_idx) live under
-            # /data_linked and must reach the handler for a structure collection's
-            # links to resolve — the old __find_datasets_under_group swept them in
-            # the same way (everything under the group except header and index).
+            # Columns are the /data datasets only. Structure links
+            # (<target>_start/_size/_idx under /data_linked) are resolved
+            # separately by opencosmo.mapping.read.read_link_set off the live
+            # /data_linked group and never enter a dataset's column set.
             columns_list = [f[f"{data_path}/{name}"] for name in group.column_names]
-            if data_linked_path in f:
-                data_linked_group = f[data_linked_path]
-                for name in data_linked_group.keys():
-                    if isinstance(data_linked_group[name], h5py.Dataset):
-                        columns_list.append(data_linked_group[name])
 
             target: DatasetTarget = DatasetTarget(
+                uuid=group.uuid,
                 header=group.header,
                 # dataset_group is the parent of /data, i.e. the group at group.path.
                 dataset_group=f[group.path],
                 columns=columns_list,
                 spatial_index=f[index_path] if group.has_index else None,
+                link_layout=group.link_layout,
             )
 
             # load/if conditions legitimately filter datasets out at open time,
             # so a dropped target here is expected behavior, not an error.
             if evaluate_load_conditions(target, open_kwargs):
                 dataset_targets.append(target)
-                if group.uuid is not None:
+                if group.has_persistent_uuid:
                     opened_uuids.add(group.uuid)
 
         if dataset_targets:

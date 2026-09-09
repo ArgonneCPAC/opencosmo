@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import h5py
 
     from opencosmo.header import OpenCosmoHeader
-    from opencosmo.io.discover import FileLayout
+    from opencosmo.io.discover import FileLayout, LinkLayout
     from opencosmo.io.index_spec import IndexSpec
     from opencosmo.io.io import MpiMode
     from opencosmo.mapping.mapping import DatasetMatchSet
@@ -54,10 +54,12 @@ The later will consist of several datasets, each with the same data type and is_
 
 
 class DatasetTarget(TypedDict):
+    uuid: UUID
     header: OpenCosmoHeader
     dataset_group: h5py.Group
     columns: list[h5py.Dataset]
     spatial_index: Optional[h5py.Group]
+    link_layout: Optional[LinkLayout]
 
 
 class FileType(Enum):
@@ -234,13 +236,17 @@ def open_files(
         # Per-scope UUIDs come from the discovered layouts, not from the built
         # children: layouts are identical on every rank, whereas a rank's actual
         # assignment is not under MpiMode.REDSHIFT.  Deriving the check from
-        # layouts keeps it collective-safe.  Datasets written before dataset
-        # identity existed have uuid=None and can never be a map endpoint.
+        # layouts keeps it collective-safe.  Datasets without a persistent
+        # on-disk ``main_uuid`` have a synthesized identity that can never be a
+        # map endpoint.
         unconnected = [
             name
             for name in root_scope_names
             if not frozenset(
-                g.uuid for fl in scopes[name] for g in fl.groups if g.uuid is not None
+                g.uuid
+                for fl in scopes[name]
+                for g in fl.groups
+                if g.has_persistent_uuid
             )
             & endpoints
         ]
@@ -337,7 +343,6 @@ def open_dataset(
     target: DatasetTarget,
     index: "IndexSpec",
     *,
-    metadata_group: Optional[str] = None,
     open_kwargs: dict[str, Any] = {},
 ) -> oc.Dataset:
     header = target["header"]
@@ -383,7 +388,6 @@ def open_dataset(
         sim_region,
         open_kwargs,
         data_index,
-        metadata_group,
         tree=tree,
     )
 

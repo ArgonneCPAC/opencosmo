@@ -1,4 +1,8 @@
 # Byte-compiled / optimized / DLL files
+.claude/
+.opencode/
+.python-version
+plans/
 test_data/
 __pycache__/
 *.py[cod]
