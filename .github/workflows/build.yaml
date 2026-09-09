@@ -1,17 +1,6 @@
 name: build dev
 on:
   workflow_call:
-    inputs:
-      push-docker:
-        description: Push to docker hub
-        default: false
-        required: false
-        type: boolean
-    secrets:
-      docker-username:
-        required: false
-      docker-access-key:
-        required: false
 
 jobs:
   build-wheels:

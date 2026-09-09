@@ -6,9 +6,11 @@ on:
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
+  docker:
+    uses: ./.github/workflows/docker.yaml
     with:
-      push-docker: true
+      tags: docker.io/astropatty/opencosmo:dev
+      push: true
     secrets:
       docker-username: ${{ secrets.DOCKER_USERNAME }}
       docker-access-key: ${{ secrets.DOCKER_ACCESS_KEY }}
-      

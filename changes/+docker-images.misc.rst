@@ -1,0 +1,1 @@
+Rework the container image: it is now based on ``astropatty/parallel-h5py`` (bundled MPICH, mpi4py and parallel h5py), built for ``linux/amd64`` and ``linux/arm64``. The merge pipeline publishes ``opencosmo:dev`` from ``main``, and releases publish ``opencosmo:<version>`` with ``opencosmo:latest`` tracking the newest tagged release.

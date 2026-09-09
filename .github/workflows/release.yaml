@@ -75,6 +75,19 @@ jobs:
           name: release-notes
           path: release_notes.rst
 
+  docker:
+    needs: prepare
+    uses: ./.github/workflows/docker.yaml
+    with:
+      ref: ${{ inputs.version }}
+      push: true
+      tags: |
+        docker.io/astropatty/opencosmo:${{ inputs.version }}
+        ${{ needs.prepare.outputs.prerelease == 'false' && 'docker.io/astropatty/opencosmo:latest' || '' }}
+    secrets:
+      docker-username: ${{ secrets.DOCKER_USERNAME }}
+      docker-access-key: ${{ secrets.DOCKER_ACCESS_KEY }}
+
   build-wheels:
     needs: prepare
     name: Build wheels (${{ matrix.target }})

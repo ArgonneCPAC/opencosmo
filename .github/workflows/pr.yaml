@@ -15,6 +15,12 @@ jobs:
     secrets: inherit
   build:
     uses: ./.github/workflows/build.yaml
+  docker:
+    uses: ./.github/workflows/docker.yaml
+    with:
+      tags: docker.io/astropatty/opencosmo:pr
+      push: false
+      platforms: linux/amd64
   check-changelog:
     runs-on: ubuntu-latest
 
