@@ -20,7 +20,6 @@ jobs:
     with:
       tags: docker.io/astropatty/opencosmo:pr
       push: false
-      platforms: linux/amd64
   check-changelog:
     runs-on: ubuntu-latest
 
