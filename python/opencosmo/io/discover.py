@@ -747,9 +747,21 @@ def discover_file(path: Path) -> FileLayout:
                     _normalize_attr(h.attrs.get("description")) for h in column_handles
                 )
 
-                # Row count from the first column, or 0 if no columns.
+                # Row count from the first column, or 0 if no columns. Every column
+                # in a group must agree: readers build a single row index for the
+                # whole group, so a ragged group has no coherent length. The shapes
+                # are already fetched by the walk above, so checking here is free
+                # and lets readers trust row_count without opening any column.
                 row_count = 0
                 if column_handles:
+                    row_counts = {h.shape[0] for h in column_handles}
+                    if len(row_counts) > 1:
+                        return FileLayout(
+                            path=path,
+                            groups=(),
+                            error=f"Not all columns in {data_path} are the same "
+                            f"length: found lengths {sorted(row_counts)}",
+                        )
                     row_count = column_handles[0].shape[0]
 
                 # Check for index group.

@@ -71,7 +71,7 @@ def make_unit_handler_from_unit_strings(
     """
     Cached-metadata counterpart to `make_unit_handler_from_hdf5`. Builds a
     `UnitHandler` from unit strings captured during discovery (e.g.
-    `DatasetTarget["column_units"]`) rather than reading `unit` attributes
+    `DatasetTarget.column_units`) rather than reading `unit` attributes
     from live h5py datasets.
     """
     columns = {name: parse_unit_string(us) for name, us in unit_strings.items()}

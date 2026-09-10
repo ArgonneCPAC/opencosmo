@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     )
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.index import DataIndex
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.io.schema import Schema
     from opencosmo.spatial import Region
 
@@ -413,20 +413,15 @@ class Lightcone(dict):
     @classmethod
     def open(
         cls,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         index_kind: str = "none",
         is_empty_ref: bool = False,
         **kwargs,
     ):
         datasets: dict[int, dict[str, Dataset]] = defaultdict(dict)
-        dataset_targets = []
-        for target in targets:
-            dataset_targets.extend(target["dataset_targets"])
-            for group in target["dataset_groups"].values():
-                dataset_targets += group
-        for i, ds_target in enumerate(dataset_targets):
-            group_name = ds_target["dataset_group"].name.split("/")[-1]
-            group_name = group_name.lstrip(f"{ds_target['header'].file.step}_")
+        for i, ds_target in enumerate(targets):
+            group_name = ds_target.name
+            group_name = group_name.lstrip(f"{ds_target.header.file.step}_")
 
             open_kwargs = dict(kwargs)
             ds = iopen.open_dataset(
@@ -434,7 +429,7 @@ class Lightcone(dict):
                 index_spec_for(index_kind, is_empty_ref, is_source=True),
                 open_kwargs=open_kwargs,
             )
-            step = ds_target["header"].file.step
+            step = ds_target.header.file.step
             if step is None:
                 step = i
             datasets[step][group_name] = ds

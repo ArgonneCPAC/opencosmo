@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from opencosmo.io.discover import LinkLayout
-    from opencosmo.io.iopen import DatasetTarget, FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.mapping.mapping import DatasetMatchSet
 
 ALLOWED_LINKS = {  # h5py.Files that can serve as a link holder and
@@ -71,14 +71,16 @@ def build_match_sets(
     targets: Mapping[str, d.Dataset | sc.StructureCollection],
 ) -> dict[UUID, DatasetMatchSet]:
     """Build the resolved link match set for one properties source dataset."""
-    layout = source_target["link_layout"]
-    if layout is None or "data_linked" not in source_target["dataset_group"]:
+    # Discovery sets link_layout if and only if the group has a /data_linked group,
+    # so the layout alone answers whether there are links to resolve.
+    layout = source_target.link_layout
+    if layout is None:
         return {}
     prefix_to_uuid, name_to_uuid = resolve_link_targets(layout, targets)
     match_set = read_link_set(
-        source_target["dataset_group"]["data_linked"],
+        source_target.group["data_linked"],
         layout,
-        source_target["uuid"],
+        source_target.uuid,
         prefix_to_uuid,
     )
     if match_set is None:
@@ -204,8 +206,26 @@ def validate_linked_groups(groups: dict[str, h5py.Group]):
         raise ValueError("Structure collections must have more than one dataset")
 
 
+def __link_target_name(target: io.iopen.DatasetTarget, prefix: str) -> str:
+    """Collection-facing name for one linked dataset.
+
+    Particles and profiles are written one level deeper than the properties group
+    they hang off, so their own path segment is not the name — their parent's is.
+    Both are pure functions of the discovered group path; nothing here touches h5py.
+    """
+    name = target.name
+    if "particles" in target.parent_name or "profiles" in target.parent_name:
+        name = target.parent_name.rsplit("/", 1)[-1]
+
+    if not name:
+        return str(target.header.file.data_type)
+    if name.startswith(prefix):
+        return name[len(prefix) + 1 :]
+    return name
+
+
 def build_structure_collection(
-    targets: list[FileTarget],
+    targets: list[io.iopen.DatasetTarget],
     ignore_empty: bool,
     index_kind: str = "none",
     is_empty_ref: bool = False,
@@ -215,56 +235,25 @@ def build_structure_collection(
         defaultdict(lambda: defaultdict(list))
     )
 
-    dataset_targets: list[io.iopen.DatasetTarget] = []
-    for t in targets:
-        dataset_targets.extend(t["dataset_targets"])
-        for datasets in t["dataset_groups"].values():
-            dataset_targets.extend(datasets)
-
-    for target in dataset_targets:
-        if target["header"].file.data_type == "halo_properties":
+    for target in targets:
+        data_type = str(target.header.file.data_type)
+        if data_type == "halo_properties":
             link_sources["halo_properties"].append(target)
-        elif target["header"].file.data_type == "galaxy_properties":
+        elif data_type == "galaxy_properties":
             link_sources["galaxy_properties"].append(target)
-        elif str(target["header"].file.data_type).startswith("halo"):
+        elif data_type.startswith("halo") or data_type.startswith("galaxy"):
+            source_type = (
+                "halo_properties"
+                if data_type.startswith("halo")
+                else "galaxy_properties"
+            )
             dataset = io.iopen.open_dataset(
                 target, index_spec_for(index_kind, is_empty_ref, is_source=False)
             )
-            name_source = target["dataset_group"]
-            if (
-                "particles" in name_source.parent.name
-                or "profiles" in target["dataset_group"].parent.name
-            ):
-                name_source = target["dataset_group"].parent
-            name = name_source.name.split("/")[-1]
-
-            if not name:
-                name = target["header"].file.data_type
-            elif name.startswith("halo_properties"):
-                name = name[16:]
-            link_targets["halo_properties"][name].append(dataset)
-        elif str(target["header"].file.data_type).startswith("galaxy"):
-            dataset = io.iopen.open_dataset(
-                target, index_spec_for(index_kind, is_empty_ref, is_source=False)
-            )
-            name_source = target["dataset_group"]
-            if (
-                "particles" in name_source.parent.name
-                or "profiles" in target["dataset_group"].parent.name
-            ):
-                name_source = target["dataset_group"].parent
-            name = name_source.name.split("/")[-1]
-
-            if not name:
-                name = target["header"].file.data_type
-            elif name.startswith("galaxy_properties"):
-                name = name[18:]
-            link_targets["galaxy_properties"][name].append(dataset)
+            name = __link_target_name(target, source_type)
+            link_targets[source_type][name].append(dataset)
         else:
-            raise ValueError(
-                "Unknown data type for structure collection "
-                f"{target['header'].file.data_type}"
-            )
+            raise ValueError(f"Unknown data type for structure collection {data_type}")
 
     if (
         index_kind == "redshift_step"
@@ -319,9 +308,9 @@ def build_lightcone_structure_collection(
 ):
     found_redshift_steps: set[int] = set()
     for source_type, source_list in link_sources.items():
-        if not all(t["header"].file.is_lightcone for t in source_list):
+        if not all(t.header.file.is_lightcone for t in source_list):
             raise ValueError("All sources must be lightcone datasets!")
-        redshift_steps = set(t["header"].file.step for t in source_list)
+        redshift_steps = set(t.header.file.step for t in source_list)
         if found_redshift_steps and found_redshift_steps != redshift_steps:
             raise ValueError(
                 "All source types must have the same set of redshift steps!"

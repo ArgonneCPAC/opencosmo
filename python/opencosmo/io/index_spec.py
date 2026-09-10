@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
 from opencosmo.index.build import empty, from_range
 
 if TYPE_CHECKING:
-    import h5py
     from mpi4py import MPI
 
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.index import DataIndex
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.spatial.tree import Tree
 
 
@@ -27,7 +27,14 @@ if TYPE_CHECKING:
     # node?" — and feeds back the possibly partition-updated region. It carries no
     # state, so each spec is just a function of this shape, not a class.
     IndexSpec = Callable[
-        [Optional[MPI.Comm], OpenCosmoHeader, h5py.Group, Optional[Tree], int, object],
+        [
+            Optional[MPI.Comm],
+            OpenCosmoHeader,
+            DatasetTarget,
+            Optional[Tree],
+            int,
+            object,
+        ],
         ResolvedIndex,
     ]
 
@@ -35,7 +42,7 @@ if TYPE_CHECKING:
 def spatial(
     comm: Optional[MPI.Comm],
     header: OpenCosmoHeader,
-    ds_group: h5py.Group,
+    target: DatasetTarget,
     tree: Optional[Tree],
     ds_length: int,
     sim_region: object,
@@ -52,6 +59,7 @@ def spatial(
     from opencosmo.io.iopen import _expand_lightcone_region
 
     try:
+        ds_group = target.group
         part = partition(comm, header, ds_group["index"], ds_group["data"], tree)
         if part is None:
             index = empty()
@@ -76,7 +84,7 @@ def spatial(
 def full(
     comm: Optional[MPI.Comm],
     header: OpenCosmoHeader,
-    ds_group: h5py.Group,
+    target: DatasetTarget,
     tree: Optional[Tree],
     ds_length: int,
     sim_region: object,
@@ -89,7 +97,7 @@ def full(
 def empty_ref(
     comm: Optional[MPI.Comm],
     header: OpenCosmoHeader,
-    ds_group: h5py.Group,
+    target: DatasetTarget,
     tree: Optional[Tree],
     ds_length: int,
     sim_region: object,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, TypedDict
+from dataclasses import dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, Any
 
 import healpy as hp
 import numpy as np
@@ -21,6 +22,7 @@ from opencosmo.spatial.region import FullSkyRegion, HealpixRegion
 from opencosmo.spatial.tree import open_tree
 from opencosmo.units import UnitConvention
 from opencosmo.utils import normalize_kwarg_name
+from opencosmo.uuid import get_column_uuid
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,7 +31,7 @@ if TYPE_CHECKING:
     import h5py
 
     from opencosmo.header import OpenCosmoHeader
-    from opencosmo.io.discover import FileLayout, LinkLayout
+    from opencosmo.io.discover import FileLayout, GroupLayout, LinkLayout
     from opencosmo.io.index_spec import IndexSpec
     from opencosmo.io.io import MpiMode
     from opencosmo.mapping.mapping import DatasetMatchSet
@@ -53,34 +55,105 @@ The later will consist of several datasets, each with the same data type and is_
 """
 
 
-class DatasetTarget(TypedDict):
-    uuid: UUID
-    header: OpenCosmoHeader
-    dataset_group: h5py.Group
-    columns: list[h5py.Dataset]
-    spatial_index: Optional[h5py.Group]
-    link_layout: Optional[LinkLayout]
-    column_units: dict[str, str | None]
-    column_descriptions: dict[str, str | None]
-    column_uuids: dict[str, UUID]
+@dataclass(frozen=True)
+class DatasetTarget:
+    """One discovered dataset group, paired with the live file it lives in.
 
+    Everything static comes from ``layout`` — discovery already captured the column
+    names, dtypes, units, descriptions, row count and link structure, so nothing here
+    re-reads them. The only live state is ``file``; the h5py accessors below resolve
+    off it on first use and are cached, so a target that is opened but never read
+    costs no HDF5 metadata access at all.
+    """
 
-class FileType(Enum):
-    DATASET = "dataset"
-    LIGHTCONE = "lightcone"
-    STRUCTURE_COLLECTION = "structure_collection"
-    PARTICLES = "particles"
-    SIMULATION_COLLECTION = "simulation_collection"
+    layout: GroupLayout
+    """The group's discovered layout. Sole source of truth for static metadata."""
 
+    file_path: Path
+    """Resolved path of the file. Only used to mint column UUIDs."""
 
-class CollectionType(Enum):
-    pass
+    file: h5py.File
+    """Live handle. Held strongly: derived Hdf5Handlers acquire columns lazily and
+    must not outlive it."""
 
+    @property
+    def uuid(self) -> UUID:
+        return self.layout.uuid
 
-class FileTarget(TypedDict):
-    dataset_group_types: dict[str, FileType]
-    dataset_targets: list[DatasetTarget]
-    dataset_groups: dict[str, list[DatasetTarget]]
+    @property
+    def header(self) -> OpenCosmoHeader:
+        return self.layout.header
+
+    @property
+    def link_layout(self) -> LinkLayout | None:
+        return self.layout.link_layout
+
+    @property
+    def column_names(self) -> tuple[str, ...]:
+        return self.layout.column_names
+
+    @property
+    def row_count(self) -> int:
+        return self.layout.row_count
+
+    @property
+    def __prefix(self) -> str:
+        # rstrip("/") maps the root group "/" to "", so the root and named groups
+        # build child paths the same way ("" -> "/data", "/scidac1" -> "/scidac1/data").
+        return self.layout.path.rstrip("/")
+
+    @property
+    def name(self) -> str:
+        """Trailing segment of the group path. Empty for the root group, matching
+        ``h5py.Group.name.split("/")[-1]``."""
+        return self.layout.path.rsplit("/", 1)[-1]
+
+    @property
+    def parent_name(self) -> str:
+        """Path of the group's parent, matching ``h5py.Group.parent.name``."""
+        return self.layout.path.rsplit("/", 1)[0] or "/"
+
+    @cached_property
+    def column_units(self) -> dict[str, str | None]:
+        return dict(zip(self.layout.column_names, self.layout.column_units))
+
+    @cached_property
+    def column_descriptions(self) -> dict[str, str | None]:
+        return dict(zip(self.layout.column_names, self.layout.column_descriptions))
+
+    @cached_property
+    def column_uuids(self) -> dict[str, UUID]:
+        return {
+            name: get_column_uuid(self.file_path, f"{self.__prefix}/data/{name}")
+            for name in self.layout.column_names
+        }
+
+    @cached_property
+    def group(self) -> h5py.Group:
+        return self.file[self.layout.path]
+
+    @cached_property
+    def data_group(self) -> h5py.Group:
+        return self.file[f"{self.__prefix}/data"]
+
+    @cached_property
+    def spatial_index(self) -> h5py.Group | None:
+        if not self.layout.has_index:
+            return None
+        return self.file[f"{self.__prefix}/index"]
+
+    @cached_property
+    def load_conditions(self) -> dict[str, bool] | None:
+        """Conditions from the group's ``load/if`` attrs, or None when absent.
+
+        Read once per target: both ``evaluate_load_conditions`` and
+        ``state_from_target`` need these, and each open used to probe the group
+        separately.
+        """
+        try:
+            return dict(self.group["load/if"].attrs)
+        except KeyError:
+            return None
 
 
 def open_files(
@@ -348,9 +421,7 @@ def open_dataset(
     *,
     open_kwargs: dict[str, Any] = {},
 ) -> oc.Dataset:
-    header = target["header"]
-    ds_group = target["dataset_group"]
-    columns = target["columns"]
+    header = target.header
 
     assert header is not None
 
@@ -359,9 +430,9 @@ def open_dataset(
     except AttributeError:
         box_size = None
 
-    if target["spatial_index"] is not None:
+    if (spatial_index := target.spatial_index) is not None:
         tree = open_tree(
-            target["spatial_index"],
+            spatial_index,
             box_size,
             header.file.is_lightcone,
         )
@@ -381,9 +452,10 @@ def open_dataset(
         p2 = tuple(header.simulation["box_size"].value for _ in range(3))
         sim_region = oc.make_box(p1, p2)
 
-    ds_length = len(next(iter(columns)))
     comm = get_comm_world()
-    data_index, sim_region = index(comm, header, ds_group, tree, ds_length, sim_region)
+    data_index, sim_region = index(
+        comm, header, target, tree, target.row_count, sim_region
+    )
 
     state = st.state_from_target(
         target,
@@ -451,11 +523,10 @@ def evaluate_load_conditions(
     Note that some open kwargs may be used in other places in the opening process,
     and will just be ignored here.
     """
-    try:
-        ifgroup = target["dataset_group"]["load/if"]
-    except KeyError:
+    conditions = target.load_conditions
+    if conditions is None:
         return True
-    load = True
-    for key, condition in ifgroup.attrs.items():
-        load = load and (open_kwargs.get(key, False) == condition)
-    return load
+    return all(
+        open_kwargs.get(key, False) == condition
+        for key, condition in conditions.items()
+    )

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from opencosmo.dataset import Dataset
     from opencosmo.dataset.build import GroupedColumnData
     from opencosmo.header import OpenCosmoHeader
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.io.schema import Schema
     from opencosmo.spatial import Region
 
@@ -491,7 +491,7 @@ class HealpixMap(dict):
         )
 
     @classmethod
-    def open(cls, targets: list[FileTarget], **kwargs):
+    def open(cls, targets: list[DatasetTarget], **kwargs):
         raise NotImplementedError()
 
     def __map(
