@@ -9,7 +9,6 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
 from typing import TYPE_CHECKING, Iterable, Iterator
 
 if TYPE_CHECKING:
@@ -100,7 +99,6 @@ def __ensure_cache_tables(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS files (
             path STRING PRIMARY KEY,
-            atime REAL NOT NULL,
             mtime REAL NOT NULL,
             layout_version INTEGER NOT NULL
         )
@@ -191,8 +189,8 @@ def write_layouts(cache_dir: Path, layouts: list[FileLayout]) -> None:
         return
 
     query = """
-        INSERT OR REPLACE INTO files (path, atime, mtime, layout_version)
-        VALUES(:path, :atime, :mtime, :layout_version)
+        INSERT OR REPLACE INTO files (path, mtime, layout_version)
+        VALUES(:path, :mtime, :layout_version)
     """
 
     with open_cache_db_for_write(cache_dir) as conn:
@@ -311,29 +309,17 @@ class PopulateResult:
 def build_db_entry(path: Path) -> dict[str, object]:
     # Any change to FileLayout/GroupLayout/LinkLayout fields or to
     # encode_file_layout_blob requires bumping it.
+    #
+    # The file's mtime as of the moment the layout was cached is the entire
+    # validity rule: an entry is usable while the file's current mtime still
+    # equals it. Equality rather than ordering, so a file restored from backup or
+    # given an older timestamp invalidates too. Nothing about when a cache entry
+    # was last *read* bears on whether it is correct, so nothing records it.
     return {
         "path": str(path),
         "mtime": float(path.stat().st_mtime),
-        "atime": float(time()),
         "layout_version": LAYOUT_VERSION,
     }
-
-
-def __update_cache_atime(cache_dir: Path, cache_paths: list[Path]) -> None:
-    if not cache_paths:
-        return
-    now = float(time())
-    placeholders = ",".join("?" for _ in cache_paths)
-    query = f"UPDATE files SET atime = ? WHERE path IN ({placeholders})"
-    file_paths = [str(fp) for fp in cache_paths]
-    try:
-        with open_cache_db_for_write(cache_dir) as conn:
-            if conn is None:
-                return
-            __ensure_cache_tables(conn)
-            conn.execute(query, [now, *file_paths])
-    except Exception:
-        logger.debug("atime update failed", exc_info=True)
 
 
 def get_cached_layouts(paths: list[Path]) -> dict[Path, FileLayout]:
@@ -360,7 +346,6 @@ def read_layouts_from_cache(
         return {}
 
     output: dict[Path, FileLayout] = {}
-    hits: list[Path] = []
     for entry in entries:
         try:
             if entry.get("layout_version") != LAYOUT_VERSION:
@@ -377,12 +362,10 @@ def read_layouts_from_cache(
             if layout is None:
                 continue
             output[path] = layout
-            hits.append(path)
         except Exception:
             logger.debug("cache entry processing failed", exc_info=True)
             continue
 
-    __update_cache_atime(cache_dir, hits)
     return output
 
 
