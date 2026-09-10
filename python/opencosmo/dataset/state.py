@@ -163,7 +163,7 @@ def state_from_target(
 ) -> DatasetState:
     handler = Hdf5Handler(
         target.data_group,
-        target.column_names,
+        {cn: None for cn in target.column_names},
         index if index is not None else from_size(target.row_count),
         target.load_conditions,
         descriptions=target.column_descriptions,

@@ -44,15 +44,14 @@ class Hdf5Handler:
     def __init__(
         self,
         data_group: h5py.Group,
-        column_names: Iterable[str],
+        columns: dict[str, h5py.Dataset | None],
         index: DataIndex,
         load_conditions: Optional[dict[str, bool]] = None,
         descriptions: Optional[dict[str, str | None]] = None,
         uuids: Optional[dict[str, UUID]] = None,
-        handles: Optional[dict[str, h5py.Dataset]] = None,
     ):
         self.__data_group = data_group
-        self.__column_names = tuple(column_names)
+        self.__columns = columns
         self.__index = index
         self.__load_conditions = load_conditions
         self.__descriptions = descriptions
@@ -60,13 +59,12 @@ class Hdf5Handler:
         # Shared by reference with every handler derived from this one. All of them
         # address the same columns in the same file, so a select/filter/take chain
         # must not re-open the same datasets once per link.
-        self.__handles = handles if handles is not None else {}
 
     def __handle(self, name: str) -> h5py.Dataset:
-        handle = self.__handles.get(name)
+        handle = self.__columns.get(name)
         if handle is None:
             handle = self.__data_group[name]
-            self.__handles[name] = handle
+            self.__columns[name] = handle
         return handle
 
     def __len__(self):
@@ -78,12 +76,11 @@ class Hdf5Handler:
     def __derive(self, index: DataIndex) -> Hdf5Handler:
         return Hdf5Handler(
             self.__data_group,
-            self.__column_names,
+            self.__columns,
             index,
             self.__load_conditions,
             descriptions=self.__descriptions,
             uuids=self.__uuids,
-            handles=self.__handles,
         )
 
     @property
@@ -94,8 +91,7 @@ class Hdf5Handler:
         if self.__uuids is not None:
             return self.__uuids
         return {
-            name: get_hdf5_column_uuid(self.__handle(name))
-            for name in self.__column_names
+            name: get_hdf5_column_uuid(self.__handle(name)) for name in self.__columns
         }
 
     def take(self, other: DataIndex, sorted: Optional[np.ndarray] = None):
@@ -123,7 +119,7 @@ class Hdf5Handler:
 
     @cached_property
     def columns(self):
-        return list(self.__column_names)
+        return list(self.__columns.keys())
 
     @property
     def descriptions(self):
@@ -131,7 +127,7 @@ class Hdf5Handler:
             return self.__descriptions
         return {
             name: self.__handle(name).attrs.get("description")
-            for name in self.__column_names
+            for name in self.__columns
         }
 
     def mask(self, mask):
