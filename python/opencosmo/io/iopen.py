@@ -430,20 +430,9 @@ def open_dataset(
     except AttributeError:
         box_size = None
 
-    if (spatial_index := target.spatial_index) is not None:
-        tree = open_tree(
-            spatial_index,
-            box_size,
-            header.file.is_lightcone,
-        )
-    else:
-        tree = None
-
+    sim_region = None
     if header.file.region is not None:
         sim_region = from_model(header.file.region)
-    elif header.file.is_lightcone and tree is not None:
-        pixels = tree.get_partitions_with_data(tree.max_level)
-        sim_region = HealpixRegion(pixels, nside=2**tree.max_level)
     elif header.file.data_type == "healpix_map":
         assert header.healpix_map["full_sky"]
         sim_region = FullSkyRegion()
@@ -451,6 +440,13 @@ def open_dataset(
         p1 = (0, 0, 0)
         p2 = tuple(header.simulation["box_size"].value for _ in range(3))
         sim_region = oc.make_box(p1, p2)
+
+    if (spatial_index := target.spatial_index) is not None:
+        tree = open_tree(
+            spatial_index, box_size, header.file.is_lightcone, region=sim_region
+        )
+    else:
+        tree = None
 
     comm = get_comm_world()
     data_index, sim_region = index(

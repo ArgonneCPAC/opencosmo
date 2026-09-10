@@ -12,8 +12,6 @@ from uuid import UUID
 import h5py
 import numpy as np
 import pytest
-
-import opencosmo as oc
 from opencosmo.header import OpenCosmoHeader
 from opencosmo.io.discover import (
     FileLayout,
@@ -24,7 +22,6 @@ from opencosmo.io.discover import (
     encode_file_layout_blob,
     group_data_type,
     has_linked_targets,
-    header_scopes,
     is_healpix_map_group,
     is_lightcone_group,
     is_particle_group,
@@ -32,6 +29,8 @@ from opencosmo.io.discover import (
 )
 from opencosmo.units.get import parse_unit_string
 from opencosmo.uuid import get_column_uuid
+
+import opencosmo as oc
 
 if TYPE_CHECKING:
     from conftest import TestDataPaths
@@ -282,32 +281,6 @@ class TestDiscoverSingleFiles:
 
         assert galaxy_group.uuid != profile_group.uuid
         assert len({group.uuid for group in multi_groups}) == len(multi_groups)
-
-
-class TestDiscoverNestedFile:
-    """Test discovery of nested multi-group files."""
-
-    def test_discover_nested_multi_group(self, test_data):
-        """Test discovery of haloproperties_multi.hdf5 with nested groups."""
-        path = test_data.snapshot.multi_simulation
-        layout = discover_file(path)
-
-        assert layout.error is None
-        assert len(layout.groups) == 2, f"Expected 2 groups, got {len(layout.groups)}"
-
-        # Groups should be sorted by path
-        paths = [g.path for g in layout.groups]
-        assert paths == sorted(paths)
-
-        # Check for distinct header paths
-        header_paths = {g.header_path for g in layout.groups}
-        assert len(header_paths) == 2, (
-            f"Expected 2 distinct header paths, got {header_paths}"
-        )
-
-        # header_scopes should yield 2 distinct buckets
-        scopes = header_scopes((layout,))
-        assert len(scopes) == 2
 
 
 class TestDiscoverMultiFile:

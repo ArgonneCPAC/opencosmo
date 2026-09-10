@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 from uuid import UUID
 from weakref import finalize, ref
 
@@ -27,8 +27,6 @@ if TYPE_CHECKING:
 
 # (producer_uuid, column_name) — the unambiguous key for a cached column.
 CacheKey = tuple[UUID, str]
-
-ColumnUpdater = Callable[[np.ndarray | u.Quantity], np.ndarray | u.Quantity]
 
 
 def finish(
@@ -227,16 +225,6 @@ class ColumnCache:
             if (child := child_()) is None:
                 continue
             child.__push_down(cached_data)
-
-    def __update_parent(self, parent: ColumnCache):
-        assert self.__parent is not None
-        assert self.__finalizer is not None
-        self.__finalizer.detach()
-        self.__parent = ref(parent)
-        self.__finalizer = finalize(
-            parent, finish, parent.__cached_data, self.__derived_index, ref(self)
-        )
-        self.__finalizer.atexit = False  # type: ignore
 
     def __len__(self):
         if not self.__cached_data and self.__derived_index is None:

@@ -9,37 +9,16 @@ from opencosmo.units import UnitConvention
 from opencosmo.units.get import (
     UnitApplicator,
     get_unit_applicators_dict,
-    get_unit_applicators_hdf5,
     parse_unit_string,
 )
 
 if TYPE_CHECKING:
     from uuid import UUID
 
-    import h5py
     import numpy as np
     from astropy.cosmology import Cosmology
 
     from opencosmo.header import OpenCosmoHeader
-
-
-def make_unit_handler_from_hdf5(
-    columns: list[h5py.Dataset],
-    header: "OpenCosmoHeader",
-    target_convention: Optional[UnitConvention] = None,
-):
-    applicators = get_unit_applicators_hdf5(columns, header)
-    if target_convention is None:
-        target_convention = header.file.unit_convention
-    if not isinstance(target_convention, UnitConvention):
-        target_convention = UnitConvention(target_convention)
-
-    return UnitHandler(
-        UnitConvention(header.file.unit_convention),
-        target_convention,
-        header.cosmology,
-        applicators,
-    )
 
 
 def make_unit_handler_from_units(

@@ -53,7 +53,6 @@ class ColumnWriter:
             raise ValueError("A single column can not have multiple data types!")
         self.__dtype = dtypes.pop()
         self.__transformation: Optional[Callable] = None
-        self.__condition: Optional[Callable] = None
 
     def update_attrs(self, new_attrs: dict[str, Any]):
         self.__attrs |= new_attrs
@@ -120,11 +119,6 @@ class ColumnWriter:
                 "A transformation can only be set on a column writer a single time!"
             )
         self.__transformation = transformation
-
-    def set_condition(
-        self, condition: Callable[[np.ndarray, Optional[MPI.Comm]], bool]
-    ):
-        self.__condition = condition
 
     def __len__(self):
         match self.combine_strategy:

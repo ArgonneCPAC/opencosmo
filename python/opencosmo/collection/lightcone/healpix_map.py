@@ -532,9 +532,6 @@ class HealpixMap(dict):
             )
         return output
 
-    def __map_attribute(self, attribute):
-        return {k: getattr(v, attribute) for k, v in self.items()}
-
     def make_schema(self) -> Schema:
         children = {}
         for name, dataset in self.items():

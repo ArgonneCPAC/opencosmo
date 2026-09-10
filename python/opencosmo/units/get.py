@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from astropy.cosmology import Cosmology
     from numpy.typing import ArrayLike
 
-    from opencosmo.header import OpenCosmoHeader
 from opencosmo.units.convention import UnitConvention
 from opencosmo.units.converters import get_unit_transitions
 
@@ -157,21 +156,6 @@ class UnitApplicator:
         if converter is not None:
             return converter(value, **unit_kwargs)
         return value
-
-
-def get_unit_applicators_hdf5(
-    columns: list[h5py.Dataset], header: "OpenCosmoHeader", is_comoving: bool = True
-):
-    base_convention = UnitConvention(header.file.unit_convention)
-
-    applicators = {}
-    for column in columns:
-        name = column.name.split("/")[-1]
-        base_unit = get_raw_units(column)
-        applicators[name] = UnitApplicator.from_unit(
-            base_unit, base_convention, header.cosmology, is_comoving
-        )
-    return applicators
 
 
 def get_unit_applicators_dict(

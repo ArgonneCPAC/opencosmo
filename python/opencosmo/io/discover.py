@@ -913,24 +913,3 @@ def is_properties_group(group: GroupLayout) -> bool:
 def has_maps(layout: FileLayout) -> bool:
     """Return True if the file layout contains any map groups."""
     return len(layout.maps) > 0
-
-
-def header_scopes(
-    layouts: tuple[FileLayout, ...],
-) -> dict[tuple[str, str], list[GroupLayout]]:
-    """
-    Bucket every GroupLayout across all non-errored files by (str(file.path), group.header_path).
-
-    Returns a dict mapping (file_path_str, header_path) -> list[GroupLayout].
-    This is the grouping key for reconstructing composition (nesting logic).
-    """
-    scopes: dict[tuple[str, str], list[GroupLayout]] = {}
-    for file_layout in layouts:
-        if file_layout.error is not None:
-            continue
-        for group in file_layout.groups:
-            key = (str(file_layout.path), group.header_path)
-            if key not in scopes:
-                scopes[key] = []
-            scopes[key].append(group)
-    return scopes

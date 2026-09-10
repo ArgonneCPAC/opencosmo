@@ -26,7 +26,7 @@ from opencosmo.io.writer import (
     ColumnWriter,
     Hdf5Source,
 )
-from opencosmo.spatial.healpix import HealPixIndex
+from opencosmo.spatial.healpix import HealPixIndex, HealpixRegion
 from opencosmo.spatial.octree import OctTreeIndex
 from opencosmo.spatial.protocols import TreePartition
 from opencosmo.spatial.utils import combine_upwards
@@ -40,6 +40,7 @@ def open_tree(
     tree_group: h5py.Group,
     box_size: Optional[int],
     is_lightcone: bool = False,
+    region: Region | None = None,
 ):
     """
     Read a tree from an HDF5 file and the associated
@@ -61,20 +62,7 @@ def open_tree(
     else:
         spatial_index = OctTreeIndex.from_box_size(box_size)
 
-    return Tree(spatial_index, tree_group)
-
-
-def read_tree(file: h5py.File | h5py.Group, box_size: int):
-    try:
-        group = file["index"]
-    except KeyError:
-        raise ValueError("This file does not have a spatial index!")
-
-    f = h5py.File(f"{uuid1()}.hdf5", "w", driver="core", backing_store=False)
-    for ds in group.keys():
-        group.copy(ds, f)
-    spatial_index = OctTreeIndex.from_box_size(box_size)
-    return Tree(spatial_index, f)
+    return Tree(spatial_index, tree_group, region)
 
 
 def apply_range_mask(
@@ -165,8 +153,12 @@ class Tree:
     """
 
     def __init__(
-        self, index: SpatialIndex, tree_columns: dict[str, h5py.Dataset | np.ndarray]
+        self,
+        index: SpatialIndex,
+        tree_columns: dict[str, h5py.Dataset | np.ndarray],
+        region: Region | None = None,
     ):
+        self.__region = region
         self.__index = index
         self.__columns = tree_columns
         # Materialize the key set once instead of probing level by level. Against an
@@ -184,6 +176,13 @@ class Tree:
 
         if self.__max_level == -1:
             raise ValueError("Tried to read a tree but no levels were found!")
+
+    def get_region(self):
+        if self.__region is None:
+            assert isinstance(self.__index, HealPixIndex)
+            pixels = self.get_partitions_with_data(self.max_level)
+            self.__region = HealpixRegion(pixels, nside=2**self.max_level)
+        return self.__region
 
     @property
     def max_level(self):

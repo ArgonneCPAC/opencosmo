@@ -56,28 +56,6 @@ def build_dataset_from_data(
     return Dataset(new_state)
 
 
-def make_in_memory_h5_file_from_data(
-    data: GroupedColumnData[np.ndarray],
-    descriptions: Optional[GroupedColumnData[str]] = None,
-) -> h5py.File:
-    name = uuid.uuid1()
-    file = h5py.File(f"{name}.hdf5", "w", driver="core", backing_store=False)
-    for group_name, columns in data.items():
-        lengths = set(len(c) for c in columns.values())
-        if len(lengths) > 1:
-            raise ValueError("Columns within a single group must be the same length!")
-        group = file.require_group(group_name)
-        group_data, group_metadata = split_data_and_metadata(
-            columns,
-            descriptions.get(group_name, {}) if descriptions is not None else {},
-        )
-
-        for column_name, column_data in columns.items():
-            group.create_dataset(column_name, data=column_data)
-            group[column_name].attrs.update(group_metadata[column_name])
-    return file
-
-
 def make_spatial_index(data: SpatialIndexData):
     """
     allowed input (for now)
