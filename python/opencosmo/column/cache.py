@@ -5,7 +5,6 @@ from uuid import UUID
 from weakref import finalize, ref
 
 import astropy.units as u
-import numpy as np
 
 from opencosmo.index import DataIndex
 from opencosmo.index.build import from_size
@@ -22,6 +21,8 @@ from opencosmo.mpi import (
 )
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from opencosmo.index import DataIndex
     from opencosmo.io.schema import Schema
 

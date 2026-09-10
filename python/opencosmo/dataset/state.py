@@ -250,7 +250,6 @@ def state_in_memory(
         header=header,
         tree=tree,
         column_map=column_map,
-        region=region,
         open_kwargs=open_kwargs,
         sort_key=None,
     )
@@ -412,10 +411,6 @@ def with_new_columns(
         column_map=new_column_map,
         unit_handler=new_unit_handler,
     )
-
-
-def with_region(state: DatasetState, region: Region) -> DatasetState:
-    return dataclasses.replace(state, region=region)
 
 
 def select(state: DatasetState, columns: set[str], drop: bool = False) -> DatasetState:
