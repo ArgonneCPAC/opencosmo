@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from itertools import count
 from typing import TYPE_CHECKING, Optional, Sequence
 from uuid import uuid1
 
@@ -170,12 +169,18 @@ class Tree:
     ):
         self.__index = index
         self.__columns = tree_columns
-        names = tree_columns.keys()
-        for i in count():
-            if f"level_{i}/start" in names:
-                continue
-            self.__max_level = i - 1
-            break
+        # Materialize the key set once instead of probing level by level. Against an
+        # h5py group each probe is a link lookup -- a filesystem round trip on a
+        # parallel filesystem -- and this runs once per dataset opened. Levels are
+        # keyed "level_N" by the h5py groups and "level_N/start" by the flat dicts
+        # make_spatial_index builds, so accept either spelling.
+        names = set(tree_columns.keys())
+        self.__max_level = -1
+        while (
+            f"level_{self.__max_level + 1}" in names
+            or f"level_{self.__max_level + 1}/start" in names
+        ):
+            self.__max_level += 1
 
         if self.__max_level == -1:
             raise ValueError("Tried to read a tree but no levels were found!")

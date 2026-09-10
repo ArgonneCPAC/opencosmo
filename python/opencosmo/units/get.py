@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import cache
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import astropy.cosmology.units as cu
@@ -193,6 +194,7 @@ def get_unit_applicators_dict(
     return applicators
 
 
+@cache
 def parse_unit_string(unit_string: str | None) -> Optional[u.Unit]:
     """
     Parse a unit string captured from an HDF5 column's "unit" attribute.
@@ -201,6 +203,11 @@ def parse_unit_string(unit_string: str | None) -> Optional[u.Unit]:
     (the attribute was present but empty) all mean "no unit" here; the
     distinction between an absent and an empty/"None" attribute is preserved
     by the caller, not by this function.
+
+    Memoized: anything not in `KNOWN_UNITS` falls through to astropy's grammar
+    parser, which is expensive, and a catalog re-presents the same handful of
+    unit strings for every column of every file it is opened alongside. `u.Unit`
+    values are immutable, so sharing one instance between callers is safe.
     """
     if unit_string is None or unit_string == "None" or unit_string == "":
         return None
