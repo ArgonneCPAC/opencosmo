@@ -1,0 +1,1 @@
+Add an on-disk cache for HDF5 file discovery metadata that makes repeated open() calls on the same files substantially faster.
