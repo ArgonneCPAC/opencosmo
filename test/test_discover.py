@@ -598,8 +598,6 @@ class TestFileLayoutBlobRoundTrip:
 
     def test_units_and_descriptions_survive_json_round_trip(self, test_data):
         """encode -> json.dumps -> json.loads -> decode preserves the mix."""
-        # Cheapest way to get a real OpenCosmoHeader without constructing one
-        # by hand: discover a real file and reuse its group's header.
         path = test_data.snapshot.primary.halo_properties
         discovered = discover_file(path)
         base_group = discovered.groups[0]
@@ -651,8 +649,6 @@ class TestWarmCacheZeroAttributeReads:
             test_data.lightcone.step(601).halo_properties,
         ]
 
-        # First open warms the on-disk layout cache. Not measured: this open
-        # is expected to read attributes since the cache starts cold.
         oc.open(*paths)
 
         calls: list[object] = []
@@ -670,7 +666,6 @@ class TestWarmCacheZeroAttributeReads:
         monkeypatch.setattr(h5py.AttributeManager, "get", _get)
         monkeypatch.setattr(h5py.AttributeManager, "__getitem__", _getitem)
 
-        # Same path list, so the warm cache actually hits.
         oc.open(*paths)
 
         unit_or_description_calls = [k for k in calls if k in ("unit", "description")]

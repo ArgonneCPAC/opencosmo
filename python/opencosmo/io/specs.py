@@ -211,7 +211,7 @@ def _build_single_dataset(
 
     ds = open_dataset(targets[0], spatial, open_kwargs=open_kwargs)
     if ds.header.file.data_type == "healpix_map":
-        return _open_healpix_map(ds, ds.region)
+        return _open_healpix_map(ds)
     return ds
 
 

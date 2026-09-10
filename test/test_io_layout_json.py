@@ -13,7 +13,6 @@ from opencosmo.io.discover import (
 
 
 def test_encode_decode_file_layout_roundtrip(test_data) -> None:
-    # Use real on-disk header models to avoid guessing model type resolution.
     header_path = test_data.snapshot.primary.halo_properties
     header = read_header(header_path)
 
@@ -25,6 +24,8 @@ def test_encode_decode_file_layout_roundtrip(test_data) -> None:
         header=header,
         column_names=("a", "b"),
         column_dtypes=("int64", "float64"),
+        column_units=(None, None),
+        column_descriptions=(None, None),
         row_count=2,
         has_index=False,
         linked_target_names=("halo",),
@@ -86,7 +87,6 @@ def test_decode_checksum_rejects() -> None:
 
     from opencosmo.io.discover import FileLayout
 
-    # Minimal errored layout still exercises checksum logic.
     fl = FileLayout(path=Path("/tmp/x.hdf5"), groups=(), error="boom", maps=())
     blob = encode_file_layout_blob(fl)
     assert "sha256" in blob

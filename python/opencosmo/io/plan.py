@@ -287,7 +287,6 @@ def build_from_assignment(
 
     from opencosmo.io.iopen import DatasetTarget, evaluate_load_conditions
 
-    # Step A: Pair this rank's discovered groups with their live file handles.
     targets: list[DatasetTarget] = []
     opened_uuids: set[UUID] = set()
 
@@ -309,15 +308,11 @@ def build_from_assignment(
                 "in that case."
             )
 
-        # Open the file (do not use a context manager; the live h5py handle in
-        # the targets must outlive this function). The layout already records
-        # every group/column/index path, so a target navigates straight to them
-        # when asked — no re-walk, and no acquisition for what is never read.
+        # No context manager: the live h5py handle must outlive this function
+        # because targets navigate to columns lazily, using the paths the layout
+        # already records.
         f = h5py.File(layout.path, "r")
 
-        # Every group in the file becomes one DatasetTarget. Builders key on the
-        # group's own path/data_type, so there is nothing to gain from
-        # pre-bucketing them by file.
         for group in layout.groups:
             target = DatasetTarget(layout=group, file_path=layout.path, file=f)
 

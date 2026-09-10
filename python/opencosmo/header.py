@@ -261,13 +261,9 @@ class OpenCosmoHeader:
         def _model_block(models: dict[str, BaseModel]) -> dict[str, Any]:
             out: dict[str, Any] = {}
             for key, model in models.items():
-                # Pydantic dumps preserve Python containers (e.g. list vs numpy
-                # array) but for some models numpy types may appear.
-                # Roundtrip safety requires preserving list ordering and JSON-safe
-                # primitive types.
+                # Round-tripping through json coerces numpy scalars/arrays that
+                # some models emit into JSON-safe primitives.
                 data = model.model_dump(by_alias=True, exclude_none=True)
-                # Keep ordering by ensuring json serialization preserves list order.
-                # Use separators to avoid any potential float formatting issues.
                 out[key] = json.loads(
                     json.dumps(
                         data, default=_json_default_serializer, separators=(",", ":")
@@ -298,17 +294,12 @@ class OpenCosmoHeader:
 
         unit_convention = UnitConvention(data["unit_convention"])
 
-        # Reconstruct Pydantic models using the existing registries.
         file_pars = FileParameters.model_validate(data["file"])
         origin_parameter_models = origin.get_origin_parameters(file_pars.origin)
         required_origin_models = origin_parameter_models.get("required", {})
         optional_origin_models = origin_parameter_models.get("optional", {})
 
         def _postprocess_payload(payload: dict[str, Any]) -> dict[str, Any]:
-            # Ensure ordering + type fidelity for known array/list fields.
-            # In particular, cosmotools_steps must preserve list ordering.
-            # If the payload is stored as a mapping with a non-preserving
-            # container type, normalize it back to a Python list.
             for k, v in list(payload.items()):
                 if k.endswith("cosmotools_steps") and isinstance(v, np.ndarray):
                     payload[k] = v.tolist()

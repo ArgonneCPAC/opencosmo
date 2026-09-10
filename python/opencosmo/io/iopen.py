@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from opencosmo.io.index_spec import IndexSpec
     from opencosmo.io.io import MpiMode
     from opencosmo.mapping.mapping import DatasetMatchSet
+    from opencosmo.spatial.region import Region
 
 """
 This file contains all the internal logic for opening a file or files.
@@ -452,6 +453,8 @@ def open_dataset(
     data_index, sim_region = index(
         comm, header, target, tree, target.row_count, sim_region
     )
+    if tree is not None:
+        tree = tree.with_region(sim_region)
 
     state = st.state_from_target(
         target,
@@ -469,8 +472,12 @@ def open_dataset(
     return dataset
 
 
-def _open_healpix_map(dataset: oc.Dataset, sim_region):
+def _open_healpix_map(dataset: oc.Dataset):
     header = dataset.header
+    sim_region: Region = FullSkyRegion()
+    if header.file.region is not None:
+        sim_region = from_model(header.file.region)
+
     if (comm := get_comm_world()) is not None and isinstance(
         sim_region, HealpixRegion
     ):  # partitioning has to be done manually since we don't store a spatial index
@@ -485,6 +492,7 @@ def _open_healpix_map(dataset: oc.Dataset, sim_region):
     elif isinstance(sim_region, FullSkyRegion) or header.healpix_map["full_sky"]:
         sim_region = HealpixRegion(dataset.index, nside=header.healpix_map["nside"])
 
+    assert isinstance(sim_region, HealpixRegion)
     return occ.HealpixMap(
         {"data": dataset},
         header.healpix_map["nside"],
@@ -497,6 +505,8 @@ def _open_healpix_map(dataset: oc.Dataset, sim_region):
 
 
 def _expand_lightcone_region(region, tree):
+    region = region or tree.get_region()
+
     pixels = region.pixels
     npix_ratio = hp.nside2npix(2**tree.max_level) // hp.nside2npix(region.nside)
     pixels = pixels[:, None] * npix_ratio + np.arange(npix_ratio)

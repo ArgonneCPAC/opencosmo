@@ -40,8 +40,7 @@ def _ensure_coordinates(ctx: LightconeOpenCtx) -> LightconeOpenCtx:
     phi = oc.col(coord_columns["y"]).arctan2(oc.col(coord_columns["x"]))
     theta = (oc.col(coord_columns["z"]) / oc.col("chi")).arccos()
     new_lightcone = ctx.lightcone.with_new_columns(chi=chi, phi=phi, theta=theta)
-    ctx = dataclasses.replace(ctx, lightcone=new_lightcone)
-    return _ensure_redshift_column(ctx)
+    return dataclasses.replace(ctx, lightcone=new_lightcone)
 
 
 @hook(HookPoint.LightconeOpen)

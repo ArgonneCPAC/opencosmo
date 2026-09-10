@@ -77,8 +77,6 @@ def decode_file_layout_blob(blob: dict[str, Any]) -> FileLayout | None:
         groups = tuple(group_from_dict(g) for g in blob.get("groups", []))
         maps = tuple(map_from_dict(m) for m in blob.get("maps", []))
 
-        # Validation: errored layouts always have empty groups and/or caller may
-        # decide to ignore maps. We just reconstruct as provided.
         return FileLayout(path=path, groups=groups, error=error, maps=maps)
     except KeyError:
         # A cached blob written before these fields were introduced is missing
@@ -747,11 +745,9 @@ def discover_file(path: Path) -> FileLayout:
                     _normalize_attr(h.attrs.get("description")) for h in column_handles
                 )
 
-                # Row count from the first column, or 0 if no columns. Every column
-                # in a group must agree: readers build a single row index for the
-                # whole group, so a ragged group has no coherent length. The shapes
-                # are already fetched by the walk above, so checking here is free
-                # and lets readers trust row_count without opening any column.
+                # Every column in a group must agree on length: readers build a
+                # single row index for the whole group. Shapes are already
+                # fetched by the walk above, so checking here is free.
                 row_count = 0
                 if column_handles:
                     row_counts = {h.shape[0] for h in column_handles}

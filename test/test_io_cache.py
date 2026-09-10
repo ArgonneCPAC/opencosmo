@@ -60,10 +60,8 @@ def test_stale_mtime_is_miss(tmp_path: Path, test_data) -> None:
 
     layout = discover_file(path)
     assert layout.error is None
-    # Write via discover_all (which also writes sqlite row + blob).
     _ = _discover_all_sorted([path])
 
-    # Ensure it's a hit first.
     hit = get_cached_layouts([path])
     assert path in hit
 
@@ -228,14 +226,14 @@ def test_warm_cold_round_trip_and_no_walk_on_warm(
     assert [fl.error for fl in warm2] == [fl.error for fl in cold]
     assert [len(fl.groups) for fl in warm2] == [len(fl.groups) for fl in cold]
 
-    # Cache directory contains both blobs.
     for p in (p1, p2):
         cache_dir = _cache_dir_for_reads(p)
         cached = read_layouts_from_cache(cache_dir, [p])
         assert p in cached
 
 
-def test_atime_refresh_on_hit(tmp_path: Path, test_data) -> None:
+def test_cache_hit_does_not_write(tmp_path: Path, test_data) -> None:
+    """A warm read must not update the row; an UPDATE per open costs an fsync."""
     from opencosmo.io.cache import get_cached_layouts
     from opencosmo.io.discover import discover_all
 
@@ -245,18 +243,17 @@ def test_atime_refresh_on_hit(tmp_path: Path, test_data) -> None:
 
     _ = discover_all([path], comm=None)
     cache_dir = _cache_dir_for_reads(path)
-    row1 = _layout_entry_from_db(cache_dir, path)
-    assert row1 is not None
-    atime1 = float(row1["atime"])
-    time.sleep(0.2)
+    blob = _uuid_blob_path(cache_dir, path)
 
-    hit = get_cached_layouts([path])
-    assert path in hit
+    before_row = _layout_entry_from_db(cache_dir, path)
+    before_blob = blob.read_bytes()
+    assert before_row is not None
+    time.sleep(0.01)
 
-    row2 = _layout_entry_from_db(cache_dir, path)
-    assert row2 is not None
-    atime2 = float(row2["atime"])
-    assert atime2 > atime1
+    assert path in get_cached_layouts([path])
+
+    assert dict(_layout_entry_from_db(cache_dir, path)) == dict(before_row)  # type: ignore
+    assert blob.read_bytes() == before_blob
 
 
 def test_disable_cache_escape_hatch(
@@ -413,3 +410,46 @@ def test_shared_cache_is_readable_from_readonly_directory(
     finally:
         for p, mode in original_modes.items():
             os.chmod(p, mode)
+
+
+class TestCacheDirSelection:
+    """The read path may use a directory-shared cache; the write path never may."""
+
+    def test_read_falls_back_when_shared_db_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opencosmo.io.cache import get_directory_read_cache_dir
+
+        data_dir = tmp_path / "data"
+        (data_dir / ".opencosmo").mkdir(parents=True)
+        monkeypatch.setattr("os.access", lambda p, mode: False)
+
+        assert get_directory_read_cache_dir(data_dir) != data_dir / ".opencosmo"
+
+    def test_read_uses_shared_when_shared_db_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opencosmo.io.cache import get_directory_read_cache_dir
+
+        data_dir = tmp_path / "data"
+        shared = data_dir / ".opencosmo"
+        shared.mkdir(parents=True)
+        (shared / "files.db").write_bytes(b"")
+        monkeypatch.setattr("os.access", lambda p, mode: False)
+
+        assert get_directory_read_cache_dir(data_dir) == shared
+
+    def test_write_never_uses_shared_cache_even_when_writable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from opencosmo.io.cache import get_directory_write_cache_dir
+
+        data_dir = tmp_path / "data"
+        shared = data_dir / ".opencosmo"
+        shared.mkdir(parents=True)
+        (shared / "files.db").write_bytes(b"")
+        monkeypatch.setattr("os.access", lambda p, mode: True)
+
+        chosen = get_directory_write_cache_dir(data_dir)
+        assert chosen is not None
+        assert chosen != shared

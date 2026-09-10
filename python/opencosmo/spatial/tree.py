@@ -184,6 +184,9 @@ class Tree:
             self.__region = HealpixRegion(pixels, nside=2**self.max_level)
         return self.__region
 
+    def with_region(self, region):
+        return Tree(self.__index, self.__columns, region)
+
     @property
     def max_level(self):
         return self.__max_level
@@ -236,6 +239,7 @@ class Tree:
             n_partitions, counts, min_level
         )
         partitions = []
+
         start, size = from_start_size_group(self.__columns[f"level_{split_level}"])
         for index_ in partition_indices:
             if len(index_) == 0:

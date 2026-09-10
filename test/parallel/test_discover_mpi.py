@@ -214,23 +214,11 @@ def test_discover_all_cache_warm_cold_determinism(test_data):
     all_paths = sorted(
         test_data.lightcone.step(600).all + test_data.lightcone.step(601).all
     )
-    # Rank is not needed for the assertion; discovery determinism is checked
-    # by comparing final layout fingerprints across all ranks.
     _rank = comm.Get_rank()
 
-    # Prime the on-disk discovery cache for a deterministic subset of files.
-    #
-    # If the MPI test environment uses a shared user cache directory (e.g.
-    # session-scoped fixture), then rank 0 priming is visible to all ranks.
-    # If instead each rank gets a distinct temp user cache dir (per-rank), then
-    # warming is not shared; we still prime a deterministic subset on every rank
-    # so that the "mixed warm/cold" path inside discover_all is exercised.
+    # Prime the on-disk discovery cache so discover_all sees mixed warm/cold.
     subset = all_paths[::2]
 
-    # We intentionally prime every rank when caches are per-rank (the common
-    # case for temp user cache dirs). When caches are shared (e.g.
-    # session-scoped user cache), rank 0 priming is sufficient and other
-    # ranks' primes are redundant but safe.
     from opencosmo.io.cache import cache_layouts
 
     prime_layouts = [discover_file(p) for p in subset]

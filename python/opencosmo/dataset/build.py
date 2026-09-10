@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Optional, TypeVar
 
-import astropy.units as u
 import h5py
 import numpy as np
 
@@ -76,18 +75,3 @@ def make_spatial_index(data: SpatialIndexData):
         assert isinstance(group, h5py.Group)
         output.update({ds.name[1:]: ds for ds in group.values()})
     return output
-
-
-def split_data_and_metadata(data: dict[str, np.ndarray], descriptions: dict[str, str]):
-    output_data = {}
-    output_metadata = {}
-    for colname, coldata in data.items():
-        output_data[colname] = coldata
-        column_metadata = {}
-        if isinstance(coldata, u.Quantity):
-            column_metadata["unit"] = str(coldata.unit)
-            output_data[colname] = coldata.value
-        if colname in descriptions:
-            column_metadata["description"] = descriptions[colname]
-        output_metadata[colname] = column_metadata
-    return output_data, output_metadata

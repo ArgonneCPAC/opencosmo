@@ -66,16 +66,22 @@ def _sqlite_connection(
             # WAL is unreliable on some network filesystems; treat write failure as non-fatal.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-        try:
-            yield conn
-        finally:
-            try:
-                conn.commit()
-            finally:
-                conn.close()
     except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
         logger.debug("sqlite connection failed", exc_info=True)
         yield None
+        return
+
+    # Outside the try above: a generator must yield exactly once, so an exception
+    # raised by the caller's body must not land on the `yield None` fallback.
+    try:
+        yield conn
+    finally:
+        try:
+            conn.commit()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
+            logger.debug("sqlite commit failed", exc_info=True)
+        finally:
+            conn.close()
 
 
 @contextlib.contextmanager
@@ -310,11 +316,8 @@ def build_db_entry(path: Path) -> dict[str, object]:
     # Any change to FileLayout/GroupLayout/LinkLayout fields or to
     # encode_file_layout_blob requires bumping it.
     #
-    # The file's mtime as of the moment the layout was cached is the entire
-    # validity rule: an entry is usable while the file's current mtime still
-    # equals it. Equality rather than ordering, so a file restored from backup or
-    # given an older timestamp invalidates too. Nothing about when a cache entry
-    # was last *read* bears on whether it is correct, so nothing records it.
+    # Validity is mtime equality, not ordering, so a file restored from backup or
+    # given an older timestamp invalidates too.
     return {
         "path": str(path),
         "mtime": float(path.stat().st_mtime),

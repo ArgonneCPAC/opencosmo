@@ -116,6 +116,9 @@ def make_dataset_schema(
         tree_schema = tree.make_schema()
         children["index"] = tree_schema
 
+    if tree is not None:
+        header = header.with_region(tree.get_region())
+
     header_schema = header.dump()
     children["header"] = header_schema
 

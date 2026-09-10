@@ -167,8 +167,7 @@ def get_unit_applicators_dict(
     # FileParameters sets use_enum_values=True, so header.file.unit_convention is
     # a plain str at runtime despite its annotation. UnitConvention is a bare Enum
     # with no str mixin, so the value patterns in get_unit_transitions never match
-    # a raw string and it raises. Normalize here, as get_unit_applicators_hdf5
-    # already does, so every caller is safe.
+    # a raw string and it raises.
     base_convention = UnitConvention(base_convention)
     applicators = {}
     for name, base_unit in units.items():
