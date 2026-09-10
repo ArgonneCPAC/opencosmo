@@ -57,6 +57,8 @@ def _group(
     linked: tuple[str, ...] = (),
     columns: tuple[str, ...] = ("x", "y"),
     dtypes: tuple[str, ...] = ("float64", "float64"),
+    units: tuple[str | None, ...] = ("Mpc/h", None),
+    descriptions: tuple[str | None, ...] = ("x position", ""),
     has_index: bool = True,
     simulation_name: str | None = "sim_a",
     uuid_=None,
@@ -70,6 +72,8 @@ def _group(
         header=_FakeHeader(_FakeFile(step, data_type, is_lightcone), simulation_name),  # type: ignore[arg-type]
         column_names=columns,
         column_dtypes=dtypes,
+        column_units=units,
+        column_descriptions=descriptions,
         row_count=100,
         has_index=has_index,
         linked_target_names=linked,

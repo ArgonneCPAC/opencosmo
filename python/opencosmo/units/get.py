@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import cache
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import astropy.cosmology.units as cu
@@ -12,7 +13,6 @@ if TYPE_CHECKING:
     from astropy.cosmology import Cosmology
     from numpy.typing import ArrayLike
 
-    from opencosmo.header import OpenCosmoHeader
 from opencosmo.units.convention import UnitConvention
 from opencosmo.units.converters import get_unit_transitions
 
@@ -158,27 +158,17 @@ class UnitApplicator:
         return value
 
 
-def get_unit_applicators_hdf5(
-    columns: list[h5py.Dataset], header: "OpenCosmoHeader", is_comoving: bool = True
-):
-    base_convention = UnitConvention(header.file.unit_convention)
-
-    applicators = {}
-    for column in columns:
-        name = column.name.split("/")[-1]
-        base_unit = get_raw_units(column)
-        applicators[name] = UnitApplicator.from_unit(
-            base_unit, base_convention, header.cosmology, is_comoving
-        )
-    return applicators
-
-
 def get_unit_applicators_dict(
-    units: dict[str, u.Unit],
-    base_convention: UnitConvention,
+    units: dict[str, u.Unit | None],
+    base_convention: UnitConvention | str,
     cosmology: Cosmology,
     is_comoving: bool = True,
 ):
+    # FileParameters sets use_enum_values=True, so header.file.unit_convention is
+    # a plain str at runtime despite its annotation. UnitConvention is a bare Enum
+    # with no str mixin, so the value patterns in get_unit_transitions never match
+    # a raw string and it raises.
+    base_convention = UnitConvention(base_convention)
     applicators = {}
     for name, base_unit in units.items():
         applicators[name] = UnitApplicator.from_unit(
@@ -187,15 +177,23 @@ def get_unit_applicators_dict(
     return applicators
 
 
-def get_raw_units(column: h5py.Dataset) -> Optional[u.Unit]:
-    if "unit" in column.attrs:
-        if (us := column.attrs["unit"]) == "None" or us == "":
-            return None
-        if (unit := KNOWN_UNITS.get(us)) is not None:
-            return unit
-        try:
-            return u.Unit(us)
-        except ValueError:
-            return None
+@cache
+def parse_unit_string(unit_string: str | None) -> Optional[u.Unit]:
+    """
+    Parse a unit string captured from an HDF5 column's "unit" attribute.
 
-    return None
+    `None` (the attribute was absent) and the literal strings "None" and ""
+    Memoized, because astropy can be slow.
+    """
+    if unit_string is None or unit_string == "None" or unit_string == "":
+        return None
+    if (unit := KNOWN_UNITS.get(unit_string)) is not None:
+        return unit
+    try:
+        return u.Unit(unit_string)
+    except ValueError:
+        return None
+
+
+def get_raw_units(column: h5py.Dataset) -> Optional[u.Unit]:
+    return parse_unit_string(column.attrs.get("unit"))

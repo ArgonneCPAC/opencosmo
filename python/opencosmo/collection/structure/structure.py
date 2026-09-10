@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from opencosmo.dtypes import HaccSimulationParameters
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.index import DataIndex
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.io.schema import Schema
     from opencosmo.mpi import MPI
     from opencosmo.spatial.protocols import Region
@@ -219,7 +219,7 @@ class StructureCollection:
     @classmethod
     def open(
         cls,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         ignore_empty=True,
         index_kind: str = "none",
         is_empty_ref: bool = False,

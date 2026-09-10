@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     import opencosmo as oc
     from opencosmo.io.discover import GroupLayout
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
 
 """
 Spec registry for opening OpenCosmo files.
@@ -195,7 +195,7 @@ def group_by_scope(
 
 
 def _build_single_dataset(
-    targets: list[FileTarget], open_kwargs: dict[str, Any]
+    targets: list[DatasetTarget], open_kwargs: dict[str, Any]
 ) -> oc.Dataset | oc.collection.Collection:
     """Build one dataset from a single-target file list.
 
@@ -209,11 +209,9 @@ def _build_single_dataset(
     from opencosmo.io.index_spec import spatial
     from opencosmo.io.iopen import _open_healpix_map, open_dataset
 
-    ds = open_dataset(
-        targets[0]["dataset_targets"][0], spatial, open_kwargs=open_kwargs
-    )
+    ds = open_dataset(targets[0], spatial, open_kwargs=open_kwargs)
     if ds.header.file.data_type == "healpix_map":
-        return _open_healpix_map(ds, ds.region)
+        return _open_healpix_map(ds)
     return ds
 
 
@@ -290,7 +288,7 @@ class FileSpec(Protocol):
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,
@@ -329,7 +327,7 @@ class StructureCollectionSpec:
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,
@@ -361,7 +359,7 @@ class HealpixMapSpec:
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,
@@ -386,7 +384,7 @@ class LightconeSpec:
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,
@@ -416,7 +414,7 @@ class DatasetSpec:
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,

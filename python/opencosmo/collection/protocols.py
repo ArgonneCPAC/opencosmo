@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Iterable, Protocol, Self, Union
 if TYPE_CHECKING:
     from opencosmo.column.column import ColumnMask
     from opencosmo.dataset import Dataset
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.io.schema import Schema
 
 
@@ -30,7 +30,7 @@ class Collection(Protocol):
 
     @classmethod
     def open(
-        cls, targets: list[FileTarget], **kwargs
+        cls, targets: list[DatasetTarget], **kwargs
     ) -> Union["Collection", Dataset]: ...
 
     def make_schema(self) -> Schema: ...

@@ -322,7 +322,10 @@ def bound(state: DatasetState, region, select_by):
         np.concatenate([into_array(contained_index), into_array(new_intersects_index)])
     )
 
-    return st.with_region(st.take_rows(state, new_index), check_region)
+    new_tree = state.tree.with_region(check_region)
+
+    new_state = st.take_rows(state, new_index)
+    return dataclasses.replace(new_state, tree=new_tree)
 
 
 def with_units(

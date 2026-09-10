@@ -1,8 +1,12 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @dataclass(frozen=True)
@@ -153,3 +157,28 @@ def test_data() -> TestDataPaths:
         if root
         else Path(__file__).parents[1] / "test_data"
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _redirect_user_cache_dir(
+    tmp_path_factory: "pytest.TempPathFactory",
+) -> "Iterator[None]":
+    """
+    Point the discovery layout cache at a temp dir for the whole session.
+
+    Without this, every test that opens a file writes to the developer's real
+    user cache and leaks state between runs.
+    """
+    import opencosmo.io.cache as cache
+
+    temp_cache_dir = tmp_path_factory.mktemp("opencosmo-user-cache") / "opencosmo"
+    temp_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Module-level names are not name-mangled, so this patches the real
+    # resolver that both the read and write cache-dir paths call.
+    original = cache.__user_cache_dir  # type: ignore[attr-defined]
+    cache.__user_cache_dir = lambda: temp_cache_dir  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        cache.__user_cache_dir = original  # type: ignore[attr-defined]

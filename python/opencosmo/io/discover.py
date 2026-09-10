@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import h5py
 import numpy as np
@@ -10,7 +13,10 @@ from pydantic import ValidationError
 
 from opencosmo.dtypes import read_map_header
 from opencosmo.header import read_header
+from opencosmo.io.cache import cache_layouts, get_cached_layouts
 from opencosmo.uuid import coerce_to_uuid, get_dataset_uuid
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,6 +45,14 @@ class GroupLayout:
 
     column_dtypes: tuple[str, ...]
     """str(dtype) for each column, same order as column_names."""
+
+    column_units: tuple[str | None, ...]
+    """``unit`` attribute of each column, index-aligned with column_names. None when
+    the attribute is absent."""
+
+    column_descriptions: tuple[str | None, ...]
+    """``description`` attribute of each column, index-aligned with column_names. None
+    when the attribute is absent."""
 
     row_count: int
     """Number of rows in the first column, or 0 if no /data group."""
@@ -177,6 +191,22 @@ def _make_group_map(
         if isinstance(item, h5py.Group):
             index.update(_make_group_map(item, path))
     return index
+
+
+def _normalize_attr(value: Any) -> str | None:
+    """Normalize an HDF5 attribute value to a plain str, preserving absence.
+
+    h5py may return attribute values as ``bytes``, ``np.bytes_``, ``str``, or
+    ``np.str_`` (including as a 0-d numpy object). ``None`` (attribute absent)
+    is passed through unchanged rather than collapsed with an empty string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8")
+    if isinstance(value, (str, np.str_)):
+        return str(value)
+    return str(value)
 
 
 def _header_scope(header_path: str) -> str:
@@ -537,15 +567,31 @@ def discover_file(path: Path) -> FileLayout:
                 )
 
                 column_names = tuple(columns_in_data)
-                column_dtypes = tuple(
-                    str(file_map[f"{data_path}/{col}"].dtype) for col in columns_in_data
+                column_handles = [
+                    file_map[f"{data_path}/{col}"] for col in columns_in_data
+                ]
+                column_dtypes = tuple(str(h.dtype) for h in column_handles)
+                column_units = tuple(
+                    _normalize_attr(h.attrs.get("unit")) for h in column_handles
+                )
+                column_descriptions = tuple(
+                    _normalize_attr(h.attrs.get("description")) for h in column_handles
                 )
 
-                # Row count from the first column, or 0 if no columns.
+                # Every column in a group must agree on length: readers build a
+                # single row index for the whole group. Shapes are already
+                # fetched by the walk above, so checking here is free.
                 row_count = 0
-                if columns_in_data:
-                    first_col = file_map[f"{data_path}/{columns_in_data[0]}"]
-                    row_count = first_col.shape[0]
+                if column_handles:
+                    row_counts = {h.shape[0] for h in column_handles}
+                    if len(row_counts) > 1:
+                        return FileLayout(
+                            path=path,
+                            groups=(),
+                            error=f"Not all columns in {data_path} are the same "
+                            f"length: found lengths {sorted(row_counts)}",
+                        )
+                    row_count = column_handles[0].shape[0]
 
                 # Check for index group.
                 group_parent = (
@@ -594,6 +640,8 @@ def discover_file(path: Path) -> FileLayout:
                         has_persistent_uuid=persistent_uuid is not None,
                         column_names=column_names,
                         column_dtypes=column_dtypes,
+                        column_units=column_units,
+                        column_descriptions=column_descriptions,
                         row_count=row_count,
                         has_index=has_index,
                         linked_target_names=linked_target_names,
@@ -624,11 +672,32 @@ def discover_all(
 
     The only irreducible special case is the absence of a communicator: with no
     ``comm`` there is nothing to allgather, so the local walk is the final result.
+
+    Layouts are memoized on disk via :mod:`opencosmo.io.cache`, keyed by path and
+    mtime. Cache misses fall through to :func:`discover_file`, and all cache
+    errors degrade to a full walk.
     """
     rank = comm.Get_rank() if comm is not None else 0
     nranks = comm.Get_size() if comm is not None else 1
 
-    my_layouts = [discover_file(p) for p in paths[rank::nranks]]
+    my_files = paths[rank::nranks]
+
+    try:
+        cached_layouts = get_cached_layouts(my_files)
+    except Exception:
+        logger.debug("cache read failed in discover_all", exc_info=True)
+        cached_layouts = {}
+
+    fresh_layouts = [discover_file(p) for p in my_files if p not in cached_layouts]
+
+    try:
+        # Safe to write per-rank: round-robin assignment (paths[rank::nranks])
+        # guarantees that no two ranks ever discover or cache the same file.
+        cache_layouts(fresh_layouts)
+    except Exception:
+        logger.debug("cache write failed in discover_all", exc_info=True)
+
+    my_layouts = fresh_layouts + list(cached_layouts.values())
 
     if comm is not None:
         my_layouts = [
@@ -675,22 +744,168 @@ def has_maps(layout: FileLayout) -> bool:
     return len(layout.maps) > 0
 
 
-def header_scopes(
-    layouts: tuple[FileLayout, ...],
-) -> dict[tuple[str, str], list[GroupLayout]]:
-    """
-    Bucket every GroupLayout across all non-errored files by (str(file.path), group.header_path).
+def encode_file_layout_blob(
+    layout: FileLayout, *, sha256: bool = True
+) -> dict[str, Any]:
+    """Encode a :class:`FileLayout` into a JSON-safe SQLite blob dict.
 
-    Returns a dict mapping (file_path_str, header_path) -> list[GroupLayout].
-    This is the grouping key for reconstructing composition (nesting logic).
+    The returned dict is ready for :func:`json.dumps`.
     """
-    scopes: dict[tuple[str, str], list[GroupLayout]] = {}
-    for file_layout in layouts:
-        if file_layout.error is not None:
-            continue
-        for group in file_layout.groups:
-            key = (str(file_layout.path), group.header_path)
-            if key not in scopes:
-                scopes[key] = []
-            scopes[key].append(group)
-    return scopes
+    groups_json = [group_to_dict(g) for g in layout.groups]
+    maps_json = [map_to_dict(m) for m in layout.maps]
+
+    blob: dict[str, Any] = {
+        "path": str(layout.path),
+        "error": layout.error,
+        "groups": groups_json,
+        "maps": maps_json,
+    }
+    if sha256:
+        canon = json.dumps(
+            blob, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        blob["sha256"] = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    return blob
+
+
+def decode_file_layout_blob(blob: dict[str, Any]) -> FileLayout | None:
+    """Decode a SQLite blob dict back into :class:`FileLayout`.
+
+    If ``sha256`` is present, it is validated against the canonical JSON encoding
+    of the decoded blob fields (excluding ``sha256`` itself).
+    """
+
+    expected = blob.get("sha256")
+    if expected is not None:
+        test_blob = dict(blob)
+        test_blob.pop("sha256", None)
+        canon = json.dumps(
+            test_blob, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        actual = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+        if actual != expected:
+            return None
+
+    from pathlib import Path
+
+    try:
+        path = Path(blob["path"])
+        error = blob.get("error")
+        groups = tuple(group_from_dict(g) for g in blob.get("groups", []))
+        maps = tuple(map_from_dict(m) for m in blob.get("maps", []))
+
+        return FileLayout(path=path, groups=groups, error=error, maps=maps)
+    except KeyError:
+        # A cached blob written before these fields were introduced is missing
+        # keys that group_from_dict now requires. Treat it as a cache miss
+        # rather than raising.
+        return None
+
+
+def group_to_dict(group: GroupLayout) -> dict[str, Any]:
+    return {
+        "path": group.path,
+        "header_path": group.header_path,
+        "header": group.header.to_dict(),
+        "column_names": list(group.column_names),
+        "column_dtypes": list(group.column_dtypes),
+        "column_units": list(group.column_units),
+        "column_descriptions": list(group.column_descriptions),
+        "row_count": group.row_count,
+        "has_index": group.has_index,
+        "linked_target_names": list(group.linked_target_names),
+        "uuid": str(group.uuid),
+        "has_persistent_uuid": group.has_persistent_uuid,
+        "link_layout": link_to_dict(group.link_layout) if group.link_layout else None,
+    }
+
+
+def group_from_dict(data: dict[str, Any]) -> GroupLayout:
+    from uuid import UUID
+
+    from opencosmo.header import OpenCosmoHeader
+
+    return GroupLayout(
+        path=data["path"],
+        header_path=data["header_path"],
+        header=OpenCosmoHeader.from_dict(data["header"]),
+        column_names=tuple(data["column_names"]),
+        column_dtypes=tuple(data["column_dtypes"]),
+        column_units=tuple(data["column_units"]),
+        column_descriptions=tuple(data["column_descriptions"]),
+        row_count=int(data["row_count"]),
+        has_index=bool(data["has_index"]),
+        linked_target_names=tuple(data["linked_target_names"]),
+        uuid=UUID(data["uuid"]),
+        has_persistent_uuid=bool(data["has_persistent_uuid"]),
+        link_layout=link_from_dict(data["link_layout"])
+        if data.get("link_layout")
+        else None,
+    )
+
+
+def link_to_dict(layout: LinkLayout | None) -> dict[str, Any]:
+    if layout is None:
+        raise ValueError("link_to_dict called with None")
+    return {
+        "path": layout.path,
+        "slots": [slot_to_dict(s) for s in layout.slots],
+    }
+
+
+def link_from_dict(data: dict[str, Any]) -> LinkLayout:
+    return LinkLayout(
+        path=data["path"],
+        slots=tuple(slot_from_dict(s) for s in data["slots"]),
+    )
+
+
+def slot_to_dict(slot: LinkSlot) -> dict[str, Any]:
+    return {
+        "prefix": slot.prefix,
+        "kind": slot.kind.value,
+        "dataset_names": list(slot.dataset_names),
+        "length": slot.length,
+    }
+
+
+def slot_from_dict(data: dict[str, Any]) -> LinkSlot:
+    return LinkSlot(
+        prefix=data["prefix"],
+        kind=LinkSlotKind(data["kind"]),
+        dataset_names=tuple(data["dataset_names"]),
+        length=int(data["length"]),
+    )
+
+
+def map_to_dict(map_layout: MapLayout) -> dict[str, Any]:
+    return {
+        "path": map_layout.path,
+        "reference": str(map_layout.reference),
+        "primary_slots": [
+            [name, str(uuid_)] for name, uuid_ in map_layout.primary_slots
+        ],
+        "primary_lengths": [
+            [str(uuid_), length] for uuid_, length in map_layout.primary_lengths
+        ],
+        "aux_slots": [[name, str(a), str(b)] for name, a, b in map_layout.aux_slots],
+    }
+
+
+def map_from_dict(data: dict[str, Any]) -> MapLayout:
+    from uuid import UUID
+
+    primary_slots = tuple(
+        (name, UUID(uuid_str)) for name, uuid_str in data["primary_slots"]
+    )
+    primary_lengths = tuple(
+        (UUID(uuid_str), int(length)) for uuid_str, length in data["primary_lengths"]
+    )
+    aux_slots = tuple((name, UUID(a), UUID(b)) for name, a, b in data["aux_slots"])
+    return MapLayout(
+        path=data["path"],
+        reference=UUID(data["reference"]),
+        primary_slots=primary_slots,
+        primary_lengths=primary_lengths,
+        aux_slots=aux_slots,
+    )

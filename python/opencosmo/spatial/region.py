@@ -239,6 +239,8 @@ class HealpixRegion:
         self.__ordering = ordering
 
     def __repr__(self):
+        if get_length(self.__idxs) == 0:
+            return "Empty region"
         res = (
             f"Healpix Region (nside = {self.nside}, ordering = {self.ordering})\n"
             f"{get_length(self.__idxs)} pixels in range: {self.pixels.min()} -> {self.pixels.max()}"

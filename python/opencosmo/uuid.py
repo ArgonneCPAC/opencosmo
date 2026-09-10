@@ -32,6 +32,10 @@ def coerce_to_uuid(value: str | bytes | np.bytes_ | UUID | None) -> UUID | None:
     return None
 
 
+def get_path_uuid(path: Path) -> UUID:
+    return uuid5(NAMESPACE, str(path))
+
+
 def get_dataset_uuid(group: h5py.Group) -> UUID:
     """
     Return the runtime identity of a dataset's /data group.
@@ -61,13 +65,15 @@ def get_in_memory_dataset_uuid(data_names: Iterable[str]) -> UUID:
     return uuid5(NAMESPACE, id)
 
 
-def get_hdf5_column_uuid(column: h5py.Dataset) -> UUID:
-    file_name = column.file.filename
-    path = column.name
+def get_column_uuid(file_path: Path, column_path: str) -> UUID:
+    """
+    Mint a column identity from an already-resolved file path and an in-file
+    column path (e.g. an HDF5 dataset path).
 
-    id = f"{file_name}::{path}"
-
-    return uuid5(NAMESPACE, id)
+    Column UUIDs are internal to the library and are not stable across
+    versions or between runs.
+    """
+    return uuid5(NAMESPACE, f"{file_path}::{column_path}")
 
 
 def get_derived_column_uuid(

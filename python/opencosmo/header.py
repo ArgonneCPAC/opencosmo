@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from copy import copy
 from functools import cache
@@ -33,6 +34,20 @@ if TYPE_CHECKING:
     from opencosmo.spatial.protocols import Region
 
 HEADER_WRITE_OVERRIDES = {"region_pixels": ColumnCombineStrategy.CONCAT}
+
+
+def _json_default_serializer(obj: Any) -> Any:
+    """Best-effort JSON serializer for header transport.
+
+    The goal is to preserve list ordering by only converting array-like types
+    into plain Python lists (instead of reordering or permuting).
+    """
+
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return str(obj)
 
 
 class OpenCosmoHeader:
@@ -232,6 +247,165 @@ class OpenCosmoHeader:
         its data type.
         """
         return self.__file_pars
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe representation of this header.
+
+        Notes
+        -----
+        This representation is intended for transport/storage (e.g. SQLite
+        caches). Values are JSON-safe primitives and nested dict/list
+        structures.
+        """
+
+        def _model_block(models: dict[str, BaseModel]) -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            for key, model in models.items():
+                # Round-tripping through json coerces numpy scalars/arrays that
+                # some models emit into JSON-safe primitives.
+                data = model.model_dump(by_alias=True, exclude_none=True)
+                out[key] = json.loads(
+                    json.dumps(
+                        data, default=_json_default_serializer, separators=(",", ":")
+                    )
+                )
+            return out
+
+        return {
+            "file": json.loads(
+                json.dumps(
+                    self.__file_pars.model_dump(by_alias=True, exclude_none=True),
+                    default=_json_default_serializer,
+                )
+            ),
+            "unit_convention": self.unit_convention.value,
+            "required_origin_parameters": _model_block(
+                self.__required_origin_parameters
+            ),
+            "optional_origin_parameters": _model_block(
+                self.__optional_origin_parameters
+            ),
+            "dtype_parameters": _model_block(self.__dtype_parameters),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OpenCosmoHeader:
+        """Reconstruct an :class:`~opencosmo.header.OpenCosmoHeader` from ``to_dict``."""
+
+        unit_convention = UnitConvention(data["unit_convention"])
+
+        file_pars = FileParameters.model_validate(data["file"])
+        origin_parameter_models = origin.get_origin_parameters(file_pars.origin)
+        required_origin_models = origin_parameter_models.get("required", {})
+        optional_origin_models = origin_parameter_models.get("optional", {})
+
+        def _postprocess_payload(payload: dict[str, Any]) -> dict[str, Any]:
+            for k, v in list(payload.items()):
+                if k.endswith("cosmotools_steps") and isinstance(v, np.ndarray):
+                    payload[k] = v.tolist()
+            return payload
+
+        required_origin_parameters: dict[str, BaseModel] = {}
+        for key, payload in data["required_origin_parameters"].items():
+            payload = _postprocess_payload(payload)
+            model_type = required_origin_models.get(key)
+            if model_type is None:
+                raise ValueError(f"Unknown required origin parameter: {key}")
+            if isinstance(model_type, UnionType):
+                for inner_model in model_type.__args__:
+                    try:
+                        required_origin_parameters[key] = inner_model.model_validate(
+                            payload
+                        )
+                        break
+                    except ValidationError as ve:
+                        if any(
+                            e["type"] == "missing" or e["input"] is None
+                            for e in ve.errors()
+                        ):
+                            continue
+                        raise ValueError(
+                            "Parsing header paramter model raised a validation error: "
+                            f"\n {ve}"
+                        )
+                else:
+                    raise ValueError(
+                        "Input attributes do not match any of the models in the union"
+                    )
+            else:
+                required_origin_parameters[key] = model_type.model_validate(payload)
+
+        optional_origin_parameters: dict[str, BaseModel] = {}
+        for key, payload in data["optional_origin_parameters"].items():
+            payload = _postprocess_payload(payload)
+            model_type = optional_origin_models.get(key)
+            if model_type is None:
+                raise ValueError(f"Unknown optional origin parameter: {key}")
+            if isinstance(model_type, UnionType):
+                for inner_model in model_type.__args__:
+                    try:
+                        optional_origin_parameters[key] = inner_model.model_validate(
+                            payload
+                        )
+                        break
+                    except ValidationError as ve:
+                        if any(
+                            e["type"] == "missing" or e["input"] is None
+                            for e in ve.errors()
+                        ):
+                            continue
+                        raise ValueError(
+                            "Parsing header paramter model raised a validation error: "
+                            f"\n {ve}"
+                        )
+                else:
+                    raise ValueError(
+                        "Input attributes do not match any of the models in the union"
+                    )
+            else:
+                optional_origin_parameters[key] = model_type.model_validate(payload)
+
+        dtype_parameter_models = dtype.get_dtype_parameters(file_pars)
+        required_dtype_models = dtype_parameter_models.get("required", {})
+        optional_dtype_models = dtype_parameter_models.get("optional", {})
+
+        dtype_parameters: dict[str, BaseModel] = {}
+        for key, payload in data["dtype_parameters"].items():
+            payload = _postprocess_payload(payload)
+            model_type = required_dtype_models.get(key) or optional_dtype_models.get(
+                key
+            )
+            if model_type is None:
+                raise ValueError(f"Unknown dtype parameter: {key}")
+            if isinstance(model_type, UnionType):
+                for inner_model in model_type.__args__:
+                    try:
+                        dtype_parameters[key] = inner_model.model_validate(payload)
+                        break
+                    except ValidationError as ve:
+                        if any(
+                            e["type"] == "missing" or e["input"] is None
+                            for e in ve.errors()
+                        ):
+                            continue
+                        raise ValueError(
+                            "Parsing header paramter model raised a validation error: "
+                            f"\n {ve}"
+                        )
+                else:
+                    raise ValueError(
+                        "Input attributes do not match any of the models in the union"
+                    )
+            else:
+                dtype_parameters[key] = model_type.model_validate(payload)
+
+        return cls(
+            file_pars,
+            required_origin_parameters,
+            optional_origin_parameters,
+            dtype_parameters,
+            unit_convention,
+        )
 
 
 @file_writer

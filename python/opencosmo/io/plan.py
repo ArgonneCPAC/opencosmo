@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import opencosmo as oc
     from opencosmo.io.discover import FileLayout
     from opencosmo.io.io import MpiMode
-    from opencosmo.io.iopen import DatasetTarget, FileTarget
+    from opencosmo.io.iopen import DatasetTarget
 
 
 @dataclass(frozen=True)
@@ -229,14 +229,14 @@ class SpecBuilder(Protocol):
     Contract for file spec builders (T3 concrete specs implement this).
 
     Each FileSpec subclass knows how to build a Dataset or Collection from
-    a list of FileTargets. The spec is responsible for routing to the appropriate
+    a list of DatasetTargets. The spec is responsible for routing to the appropriate
     builder (open_dataset, Lightcone.open, StructureCollection.open) with
     the correct set of targets for that collection type.
     """
 
     def build_from_targets(
         self,
-        targets: list[FileTarget],
+        targets: list[DatasetTarget],
         *,
         index_kind: str,
         is_empty_ref: bool,
@@ -251,15 +251,15 @@ def build_from_assignment(
     open_kwargs: dict[str, Any],
 ) -> tuple[oc.Dataset | oc.collection.Collection | None, frozenset[UUID]]:
     """
-    Reopen only this rank's files and rehydrate FileTargets from live handles.
+    Reopen only this rank's files and pair each discovered group with its handle.
 
     Given an Assignment specifying which files this rank owns, and the
-    in-memory FileLayout tuple from discovery, reopens those files and
-    reconstructs the FileTarget TypedDict structures by navigating to the
-    known group/data paths (no re-walk, no header re-read — reuses the
-    already-discovered layout metadata). Re-runs evaluate_load_conditions
-    live, then delegates to the matched spec's builder with kwargs derived
-    from the Assignment.
+    in-memory FileLayout tuple from discovery, reopens those files and pairs
+    every GroupLayout with the live h5py.File it came from. No group, index or
+    column handle is acquired here — a DatasetTarget resolves those on demand —
+    so a file this rank opens but never reads costs one h5py.File open and
+    nothing more. Re-runs evaluate_load_conditions live, then delegates to the
+    matched spec's builder with kwargs derived from the Assignment.
 
     Parameters
     ----------
@@ -285,10 +285,9 @@ def build_from_assignment(
     """
     import h5py
 
-    from opencosmo.io.iopen import DatasetTarget, FileTarget, evaluate_load_conditions
+    from opencosmo.io.iopen import DatasetTarget, evaluate_load_conditions
 
-    # Step A: Rehydrate this rank's files into FileTargets.
-    file_targets: list[FileTarget] = []
+    targets: list[DatasetTarget] = []
     opened_uuids: set[UUID] = set()
 
     for file_idx in assignment.file_indices:
@@ -309,70 +308,32 @@ def build_from_assignment(
                 "in that case."
             )
 
-        # Open the file (do not use a context manager; the live h5py handles in
-        # the targets must outlive this function). The layout already records
-        # every group/column/index path, so navigate straight to them — no need
-        # to re-walk the file to rediscover what discovery already found.
+        # No context manager: the live h5py handle must outlive this function
+        # because targets navigate to columns lazily, using the paths the layout
+        # already records.
         f = h5py.File(layout.path, "r")
 
-        # Every group in the file becomes one DatasetTarget in dataset_targets;
-        # dataset_groups stays empty. Both builders (build_structure_collection,
-        # Lightcone.open) flatten dataset_targets and dataset_groups into a single
-        # list, so there is nothing to gain from pre-bucketing — the group's own
-        # path/data_type already carries the identity the builders key on.
-        dataset_targets: list[DatasetTarget] = []
-
         for group in layout.groups:
-            # rstrip("/") maps the root group "/" to "", so both the root and
-            # named groups build their child paths the same way ("" -> "/data",
-            # "/scidac1" -> "/scidac1/data").
-            prefix = group.path.rstrip("/")
-            data_path = f"{prefix}/data"
-            index_path = f"{prefix}/index"
-
-            # Columns are the /data datasets only. Structure links
-            # (<target>_start/_size/_idx under /data_linked) are resolved
-            # separately by opencosmo.mapping.read.read_link_set off the live
-            # /data_linked group and never enter a dataset's column set.
-            columns_list = [f[f"{data_path}/{name}"] for name in group.column_names]
-
-            target: DatasetTarget = DatasetTarget(
-                uuid=group.uuid,
-                header=group.header,
-                # dataset_group is the parent of /data, i.e. the group at group.path.
-                dataset_group=f[group.path],
-                columns=columns_list,
-                spatial_index=f[index_path] if group.has_index else None,
-                link_layout=group.link_layout,
-            )
+            target = DatasetTarget(layout=group, file_path=layout.path, file=f)
 
             # load/if conditions legitimately filter datasets out at open time,
             # so a dropped target here is expected behavior, not an error.
             if evaluate_load_conditions(target, open_kwargs):
-                dataset_targets.append(target)
+                targets.append(target)
                 if group.has_persistent_uuid:
                     opened_uuids.add(group.uuid)
-
-        if dataset_targets:
-            file_targets.append(
-                FileTarget(
-                    dataset_group_types={},
-                    dataset_targets=dataset_targets,
-                    dataset_groups={},
-                )
-            )
 
     # Every target in this scope was filtered out by load/if conditions (the whole
     # scope is gated behind an open flag the user did not pass). There is nothing to
     # build; the orchestrator drops this scope. This is deterministic across ranks
     # (same open_kwargs everywhere), so it stays collective-safe.
-    if not file_targets:
+    if not targets:
         return None, frozenset()
 
     # Step B: Pass Assignment fields through to spec builder.
     return (
         matched_spec.build_from_targets(
-            file_targets,
+            targets,
             index_kind=assignment.index_kind,
             is_empty_ref=assignment.is_empty_ref,
             open_kwargs=open_kwargs,

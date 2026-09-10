@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from itertools import count
 from typing import TYPE_CHECKING, Optional, Sequence
 from uuid import uuid1
 
@@ -27,7 +26,7 @@ from opencosmo.io.writer import (
     ColumnWriter,
     Hdf5Source,
 )
-from opencosmo.spatial.healpix import HealPixIndex
+from opencosmo.spatial.healpix import HealPixIndex, HealpixRegion
 from opencosmo.spatial.octree import OctTreeIndex
 from opencosmo.spatial.protocols import TreePartition
 from opencosmo.spatial.utils import combine_upwards
@@ -41,6 +40,7 @@ def open_tree(
     tree_group: h5py.Group,
     box_size: Optional[int],
     is_lightcone: bool = False,
+    region: Region | None = None,
 ):
     """
     Read a tree from an HDF5 file and the associated
@@ -62,20 +62,7 @@ def open_tree(
     else:
         spatial_index = OctTreeIndex.from_box_size(box_size)
 
-    return Tree(spatial_index, tree_group)
-
-
-def read_tree(file: h5py.File | h5py.Group, box_size: int):
-    try:
-        group = file["index"]
-    except KeyError:
-        raise ValueError("This file does not have a spatial index!")
-
-    f = h5py.File(f"{uuid1()}.hdf5", "w", driver="core", backing_store=False)
-    for ds in group.keys():
-        group.copy(ds, f)
-    spatial_index = OctTreeIndex.from_box_size(box_size)
-    return Tree(spatial_index, f)
+    return Tree(spatial_index, tree_group, region)
 
 
 def apply_range_mask(
@@ -166,19 +153,39 @@ class Tree:
     """
 
     def __init__(
-        self, index: SpatialIndex, tree_columns: dict[str, h5py.Dataset | np.ndarray]
+        self,
+        index: SpatialIndex,
+        tree_columns: dict[str, h5py.Dataset | np.ndarray],
+        region: Region | None = None,
     ):
+        self.__region = region
         self.__index = index
         self.__columns = tree_columns
-        names = tree_columns.keys()
-        for i in count():
-            if f"level_{i}/start" in names:
-                continue
-            self.__max_level = i - 1
-            break
+        # Materialize the key set once instead of probing level by level. Against an
+        # h5py group each probe is a link lookup -- a filesystem round trip on a
+        # parallel filesystem -- and this runs once per dataset opened. Levels are
+        # keyed "level_N" by the h5py groups and "level_N/start" by the flat dicts
+        # make_spatial_index builds, so accept either spelling.
+        names = set(tree_columns.keys())
+        self.__max_level = -1
+        while (
+            f"level_{self.__max_level + 1}" in names
+            or f"level_{self.__max_level + 1}/start" in names
+        ):
+            self.__max_level += 1
 
         if self.__max_level == -1:
             raise ValueError("Tried to read a tree but no levels were found!")
+
+    def get_region(self):
+        if self.__region is None:
+            assert isinstance(self.__index, HealPixIndex)
+            pixels = self.get_partitions_with_data(self.max_level)
+            self.__region = HealpixRegion(pixels, nside=2**self.max_level)
+        return self.__region
+
+    def with_region(self, region):
+        return Tree(self.__index, self.__columns, region)
 
     @property
     def max_level(self):
@@ -232,6 +239,7 @@ class Tree:
             n_partitions, counts, min_level
         )
         partitions = []
+
         start, size = from_start_size_group(self.__columns[f"level_{split_level}"])
         for index_ in partition_indices:
             if len(index_) == 0:
@@ -278,7 +286,7 @@ class Tree:
         result = combine_upwards(
             n, self.__index.subdivision_factor, self.__max_level, target
         )
-        return Tree(self.__index, result)
+        return Tree(self.__index, result, self.__region)
 
     def make_schema(self):
         level_schemas = {}

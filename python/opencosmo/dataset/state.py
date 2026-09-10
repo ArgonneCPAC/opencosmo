@@ -21,7 +21,7 @@ from opencosmo.dataset.instantiate import instantiate_dataset
 from opencosmo.dataset.output import get_derived_column_names, make_dataset_schema
 from opencosmo.handler.empty import EmptyHandler
 from opencosmo.handler.hdf5 import Hdf5Handler
-from opencosmo.index import reindex_column, single_chunk
+from opencosmo.index import from_size, reindex_column, single_chunk
 from opencosmo.index.mask import into_array
 from opencosmo.mpi import gather_index, get_comm_world, verify_redistribution
 from opencosmo.plugins.contexts import (
@@ -32,7 +32,7 @@ from opencosmo.plugins.contexts import (
 )
 from opencosmo.plugins.hook import fold
 from opencosmo.units.handler import (
-    make_unit_handler_from_hdf5,
+    make_unit_handler_from_unit_strings,
     make_unit_handler_from_units,
 )
 from opencosmo.uuid import get_in_memory_dataset_uuid, get_raw_column_uuid
@@ -92,7 +92,6 @@ class DatasetState:
     header: OpenCosmoHeader
     tree: Tree | None
     column_map: dict[str, UUID]
-    region: Region
     open_kwargs: dict[str, Any]
     sort_key: Optional[tuple[str, bool, bool]]
 
@@ -121,6 +120,12 @@ class DatasetState:
             for name, description in all_descriptions.items()
             if name in self.columns
         }
+
+    @property
+    def region(self):
+        if self.tree is None:
+            return None
+        return self.tree.get_region()
 
     @property
     def kwargs(self):
@@ -161,22 +166,18 @@ def state_from_target(
     index: Optional[DataIndex] = None,
     tree: Tree | None = None,
 ) -> DatasetState:
-    data_group = target["dataset_group"]
-    if "load" in data_group.keys():
-        load_conditions = dict(data_group["load/if"].attrs)
-    else:
-        load_conditions = None
-
-    handler = Hdf5Handler.from_columns(
-        target["columns"],
-        index,
-        load_conditions,
+    handler = Hdf5Handler(
+        target.data_group,
+        {cn: None for cn in target.column_names},
+        index if index is not None else from_size(target.row_count),
+        target.load_conditions,
+        descriptions=target.column_descriptions,
     )
-    unit_handler = make_unit_handler_from_hdf5(
-        target["columns"], target["header"], unit_convention
+    unit_handler = make_unit_handler_from_unit_strings(
+        target.column_units, target.header, unit_convention
     )
-    descriptions = handler.descriptions
-    uuids = handler.get_uuids()
+    descriptions = target.column_descriptions
+    uuids = target.column_uuids
 
     raw_producers = [
         RawColumn(
@@ -191,15 +192,14 @@ def state_from_target(
     producers: dict[UUID, ConstructedColumn] = {p.uuid: p for p in raw_producers}
     cache = ColumnCache.empty()
     return DatasetState(
-        uuid=target["uuid"],
+        uuid=target.uuid,
         producers=producers,
         raw_data_handler=handler,
         cache=cache,
         unit_handler=unit_handler,
-        header=target["header"],
+        header=target.header,
         tree=tree,
         column_map=column_map,
-        region=region,
         open_kwargs=open_kwargs,
         sort_key=None,
     )
@@ -249,7 +249,6 @@ def state_in_memory(
         header=header,
         tree=tree,
         column_map=column_map,
-        region=region,
         open_kwargs=open_kwargs,
         sort_key=None,
     )
@@ -411,10 +410,6 @@ def with_new_columns(
         column_map=new_column_map,
         unit_handler=new_unit_handler,
     )
-
-
-def with_region(state: DatasetState, region: Region) -> DatasetState:
-    return dataclasses.replace(state, region=region)
 
 
 def select(state: DatasetState, columns: set[str], drop: bool = False) -> DatasetState:

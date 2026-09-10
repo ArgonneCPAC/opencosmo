@@ -84,11 +84,13 @@ def build_dependency_graph(
         assert uuid is not None
         uuid_to_node[uuid] = node_idx
 
+    known_uuids = set(uuid_to_node)
+
     for producer in producers:
         uuid = producer.uuid
         assert uuid is not None
         produces_idx = uuid_to_node[uuid]
-        if not producer.requires.issubset(uuid_to_node.keys()):
+        if not producer.requires.issubset(known_uuids):
             raise ValueError(
                 f"Producer {producer.produces} depends on an unknown producer UUID."
             )

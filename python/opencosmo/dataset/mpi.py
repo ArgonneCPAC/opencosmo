@@ -46,6 +46,7 @@ def partition(
                 "The tree doesn't have enough subdivisions to serve every rank!"
             )
             part = None
+
         return part
 
     length = len(next(iter(data_group.values())))

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from opencosmo.column.column import ColumnMask, ConstructedColumn
     from opencosmo.dataset.dataset import OpenCosmoData
     from opencosmo.header import OpenCosmoHeader
-    from opencosmo.io.iopen import FileTarget
+    from opencosmo.io.iopen import DatasetTarget
     from opencosmo.io.schema import Schema
     from opencosmo.mapping.mapping import DatasetMatchSet
     from opencosmo.spatial.protocols import Region
@@ -281,7 +281,7 @@ class SimulationCollection:
         )
 
     @classmethod
-    def open(cls, targets: list[FileTarget], **kwargs) -> Collection | Dataset:
+    def open(cls, targets: list[DatasetTarget], **kwargs) -> Collection | Dataset:
         raise NotImplementedError()
 
     def make_schema(self) -> Schema:
