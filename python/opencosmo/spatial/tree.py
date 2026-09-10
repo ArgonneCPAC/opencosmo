@@ -286,7 +286,7 @@ class Tree:
         result = combine_upwards(
             n, self.__index.subdivision_factor, self.__max_level, target
         )
-        return Tree(self.__index, result)
+        return Tree(self.__index, result, self.__region)
 
     def make_schema(self):
         level_schemas = {}
