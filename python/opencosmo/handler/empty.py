@@ -7,8 +7,6 @@ from opencosmo.io.schema import FileEntry, make_schema
 from opencosmo.index import empty
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     import numpy as np
 
     from opencosmo.index import DataIndex
@@ -29,9 +27,6 @@ class EmptyHandler:
 
     def make_schema(self, *args, **kwargs):
         return make_schema("data", FileEntry.EMPTY)
-
-    def get_uuids(self) -> dict[str, UUID]:
-        return {}
 
     @property
     def columns(self) -> Iterable[str]:

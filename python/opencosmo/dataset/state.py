@@ -172,7 +172,6 @@ def state_from_target(
         index if index is not None else from_size(target.row_count),
         target.load_conditions,
         descriptions=target.column_descriptions,
-        uuids=target.column_uuids,
     )
     unit_handler = make_unit_handler_from_unit_strings(
         target.column_units, target.header, unit_convention

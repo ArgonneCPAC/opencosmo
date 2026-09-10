@@ -23,8 +23,6 @@ class DataHandler(Protocol):
         columns: Iterable[str],
     ) -> Schema: ...
 
-    def get_uuids(self) -> dict[str, UUID]: ...
-
     """
 
     """

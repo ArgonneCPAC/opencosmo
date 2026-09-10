@@ -84,9 +84,6 @@ def build_dependency_graph(
         assert uuid is not None
         uuid_to_node[uuid] = node_idx
 
-    # Hoisted: set.issubset against a dict view rebuilds the set on every call, so
-    # leaving this inline makes the loop quadratic in the column count -- 14.7M UUID
-    # hashes for a 328-column dataset opened across 67 lightcone steps.
     known_uuids = set(uuid_to_node)
 
     for producer in producers:
