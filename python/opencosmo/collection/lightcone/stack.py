@@ -98,7 +98,7 @@ def update_global_order_mpi(data, comm, order):
     return np.concat(all_data)[global_order]
 
 
-def sync_metadata(dataset_schemas: list[Schema]):
+def sync_metadata(dataset_schemas: list[Schema], skip: list[str] = []):
     metadata = [schema.attributes for schema in dataset_schemas]
     identity = {"uuid", "main_uuid"}
     to_compare = []
@@ -107,10 +107,12 @@ def sync_metadata(dataset_schemas: list[Schema]):
     if not all(am == to_compare[0] for am in to_compare[1:]):
         raise ValueError("Datasets don't have the same metadata!")
 
-    child_names = set(frozenset(md.keys()) for md in metadata)
+    child_names = set(frozenset(schema.children.keys()) for schema in dataset_schemas)
     if len(child_names) > 1:
         raise ValueError("Datasets don't have the same metadata!")
     for child in list(child_names)[0]:
+        if child in skip:
+            continue
         schemas = [sc.children[child] for sc in dataset_schemas]
         sync_metadata(schemas)
 
@@ -212,9 +214,9 @@ def stack_lightcone_datasets_in_schema(
             [schema.children["index"] for schema in schemas]
         )
         header_schema = sync_headers(ds_list, redshift_range)
-        additional_metadata = sync_metadata(schemas)
+        additional_metadata = sync_metadata(schemas, skip=["header"])
 
-        children = {
+        children = schemas[0].children | {
             "data": new_data_group,
             "index": new_index_group,
             "header": header_schema,
@@ -257,7 +259,7 @@ def stack_data_groups(schemas: list[Schema]):
     new_schema = make_schema(
         base_schema.name,
         base_schema.type,
-        children={},
+        children=base_schema.children,
         columns=new_writers,
         attributes=base_schema.attributes,
     )

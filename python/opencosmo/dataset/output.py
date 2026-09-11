@@ -8,6 +8,7 @@ import astropy.units as u
 from opencosmo.column.column import RawColumn
 from opencosmo.io.schema import (
     FileEntry,
+    add_metadata,
     combine_with_cached_schema,
     make_schema,
 )
@@ -90,10 +91,6 @@ def make_dataset_schema(
 
     build_derived_writers(producers, derived_data, data_schema, cached_data_schema)
 
-    attributes = {}
-    if (load_conditions := raw_data_handler.load_conditions) is not None:
-        attributes["load/if"] = load_conditions
-
     data_schema = combine_with_cached_schema(
         data_schema,
         cached_data_schema,
@@ -121,6 +118,7 @@ def make_dataset_schema(
     header_schema = header.dump()
     children["header"] = header_schema
 
-    return make_schema(
-        name, FileEntry.DATASET, children=children, attributes=attributes
-    )
+    schema = make_schema(name, FileEntry.DATASET, children=children, attributes={})
+    if (load_conditions := raw_data_handler.load_conditions) is not None:
+        schema = add_metadata("load/if", schema, load_conditions)
+    return schema

@@ -5,14 +5,12 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 
-from opencosmo.io.writer import ColumnWriter, Hdf5Source
+from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter, Hdf5Source
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from opencosmo.index import SimpleIndex
-
-    from .writer import ColumnCombineStrategy
 
 
 class FileEntry(Enum):
@@ -112,12 +110,14 @@ def add_metadata(
     overrides = overrides or {}
     writers = {}
     if not path:
-        for name, ov in overrides.items():
-            if name not in metadata:
-                continue
-            column_data = np.array(metadata.pop(name))
-            writer = ColumnWriter.from_numpy_array(column_data, ov)
-            writers[name] = writer
+        metadata_names = list(metadata.keys())
+        for name in metadata_names:
+            if isinstance(metadata[name], list):
+                column_data = np.array(metadata.pop(name))
+                writer = ColumnWriter.from_numpy_array(
+                    column_data, overrides.get(name, ColumnCombineStrategy.CONCAT)
+                )
+                writers[name] = writer
 
         new_schema = schema._replace(
             attributes=schema.attributes | metadata, columns=schema.columns | writers
