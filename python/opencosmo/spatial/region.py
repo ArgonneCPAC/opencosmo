@@ -352,6 +352,22 @@ class BoxRegion:
     def bounding_box(self) -> BoxRegion:
         return self
 
+    def combine(self, *others: BoxRegion):
+        if not others:
+            return self
+        bounds = self.bounds
+        for o in others:
+            bounds = [
+                (
+                    min(bounds[i][0], o.bounds[i][0]),
+                    max(bounds[i][1], o.bounds[i][1]),
+                )
+                for i in range(3)
+            ]
+        center = ((b[0] + b[1]) / 2 for b in bounds)
+        halfwidth = ((b[1] - b[0]) / 2 for b in bounds)
+        return BoxRegion(center, halfwidth)
+
     def into_base_convention(
         self,
         unit_handler: UnitHandler,

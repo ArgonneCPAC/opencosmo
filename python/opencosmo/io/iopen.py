@@ -439,7 +439,7 @@ def open_dataset(
         sim_region = FullSkyRegion()
     elif not header.file.is_lightcone:
         p1 = (0, 0, 0)
-        p2 = tuple(header.simulation["box_size"].value for _ in range(3))
+        p2 = tuple(box_size for _ in range(3))
         sim_region = oc.make_box(p1, p2)
 
     if (spatial_index := target.spatial_index) is not None:

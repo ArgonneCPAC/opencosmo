@@ -8,10 +8,12 @@ import hdf5plugin
 import numpy as np
 from h5py import h5fd, h5p, h5s
 
+from opencosmo.dtypes.file import FileParameters
 from opencosmo.io.schema import FileEntry, Schema, make_schema
 from opencosmo.io.verify import schema_data_length, verify_structure
 from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter
 from opencosmo.mpi import MPI, get_all_keys, get_comm_world, get_subcom, sum_scatter
+from opencosmo.spatial.builders import from_model
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -144,9 +146,71 @@ def sync_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
     from opencosmo.collection.simulation.io import resort_simulation_collection_mpi
 
     schema = sync_uuids(schema, comm, {})
+    schema = sync_header_regions(schema, comm)
+
     if schema.type == FileEntry.SIMULATION_COLLECTION:
         schema = resort_simulation_collection_mpi(schema, comm)
     return verify_schemas(schema, comm)
+
+
+def sync_header_regions(schema, comm):
+    has_schema = comm.allgather(schema is not None)
+    subcomm = comm
+    subgroup = None
+    if not all(has_schema):
+        subcomm, subgroup = get_subcom(has_schema, comm)
+
+    if subcomm == MPI.COMM_NULL:
+        cleanup_mpi(comm, subcomm, subgroup)
+        return schema
+
+    child_names = get_all_keys(schema.children, subcomm)
+    if not child_names:
+        new_schema = schema
+    if "header" not in child_names:
+        new_children = {
+            name: sync_header_regions(schema.children.get(name), subcomm)
+            for name in child_names
+        }
+        new_children = {k: v for k, v in new_children.items() if v is not None}
+        new_schema = schema._replace(children=new_children)
+
+    else:
+        header = schema.children["header"]
+        file_pars = header.children["file"]
+        new_file_pars = __combine_header_regions(file_pars, subcomm)
+        new_header = header._replace(children=header.children | {"file": new_file_pars})
+        new_schema = schema._replace(children=schema.children | {"header": new_header})
+    if subgroup is not None:
+        cleanup_mpi(comm, subcomm, subgroup)
+    return new_schema
+
+
+def __combine_header_regions(schema, comm):
+
+    metadata = schema.attributes | {
+        name: col.get_data() for name, col in schema.columns.items()
+    }
+    pars = FileParameters(**metadata)
+    if pars.region is None:
+        return schema
+
+    regions = comm.allgather(from_model(pars.region))
+    new_region = regions[0].combine(*regions[1:])
+    region_dump = {
+        f"region_{key}": val
+        for key, val in new_region.into_model().model_dump().items()
+    }
+    attribute_keys = set(schema.attributes).intersection(region_dump)
+    column_keys = set(schema.columns).intersection(region_dump)
+    new_attributes = schema.attributes | {
+        name: region_dump[name] for name in attribute_keys
+    }
+    new_columns = {
+        name: ColumnWriter.from_numpy_array(np.array(region_dump[name]))
+        for name in column_keys
+    }
+    return schema._replace(columns=new_columns, attributes=new_attributes)
 
 
 def __verify_structure_collective(schema: Schema, comm: MPI.Comm) -> None:
@@ -332,7 +396,9 @@ def verify_columns(columns: dict[str, ColumnWriter], comm: MPI.Comm):
 
 
 def sync_attributes(metadata: dict[str, Any], group_name: str, comm: MPI.Comm):
+
     all_metadata = comm.allgather(metadata)
+
     for md in all_metadata[1:]:
         if md != all_metadata[0]:
             raise ValueError(
