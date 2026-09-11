@@ -7,7 +7,7 @@ import healpy as hp
 import numpy as np
 
 from opencosmo import dataset as ds
-from opencosmo.io.schema import FileEntry, make_schema
+from opencosmo.io.schema import FileEntry, add_metadata, make_schema
 from opencosmo.mpi import get_all_keys, get_comm_world
 from opencosmo.spatial.check import find_coordinates_2d
 
@@ -99,27 +99,20 @@ def update_global_order_mpi(data, comm, order):
 
 
 def sync_metadata(dataset_schemas: list[Schema]):
-    additional_metadata = [schema.attributes for schema in dataset_schemas]
-    if not any(additional_metadata):
-        return {}
-
-    def without_dataset_identity(metadata):
-        return {
-            path: (
-                {key: value for key, value in attributes.items() if key not in identity}
-                if path == ""
-                else attributes
-            )
-            for path, attributes in metadata.items()
-            if path != "" or any(key not in identity for key in attributes)
-        }
-
+    metadata = [schema.attributes for schema in dataset_schemas]
     identity = {"uuid", "main_uuid"}
-    comparable_metadata = [without_dataset_identity(am) for am in additional_metadata]
-    if not all(am == comparable_metadata[0] for am in comparable_metadata[1:]):
+    to_compare = []
+    for md in metadata:
+        to_compare.append({k: v for k, v in md.items() if k not in identity})
+    if not all(am == to_compare[0] for am in to_compare[1:]):
         raise ValueError("Datasets don't have the same metadata!")
 
-    return additional_metadata[0]
+    child_names = set(frozenset(md.keys()) for md in metadata)
+    if len(child_names) > 1:
+        raise ValueError("Datasets don't have the same metadata!")
+    for child in list(child_names)[0]:
+        schemas = [sc.children[child] for sc in dataset_schemas]
+        sync_metadata(schemas)
 
 
 def sync_headers(datasets: list[ds.Dataset], redshift_range):
@@ -152,9 +145,12 @@ def sync_headers(datasets: list[ds.Dataset], redshift_range):
 
     # lightcones are identified by their upper redshift slice
     header_schema = datasets[0].header.dump()
-    header_schema.attributes["file"]["redshift"] = redshift
-    header_schema.attributes["file"]["step"] = step
-    header_schema.attributes["lightcone"]["z_range"] = redshift_range
+    header_schema = add_metadata(
+        "file", header_schema, {"redshift": redshift, "step": step}
+    )
+    header_schema = add_metadata(
+        "lightcone", header_schema, {"z_range": redshift_range}
+    )
     return header_schema
 
 

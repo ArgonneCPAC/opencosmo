@@ -39,10 +39,9 @@ def write_columns(group: h5py.File | h5py.Group, schema: Schema):
         write_columns(group[child_name], child_schema)
 
 
-def write_metadata(group: h5py.File | h5py.Group, schema: Schema):
-    for path, metadata in schema.attributes.items():
-        metadata_group = group.require_group(path) if path else group
-        metadata_group.attrs.update(metadata)
+def write_metadata(group: h5py.File | h5py.Group | h5py.Dataset, schema: Schema):
+    if schema.attributes:
+        group.attrs.update(schema.attributes)
 
     for child_name, child_schema in schema.children.items():
         write_metadata(group[child_name], child_schema)

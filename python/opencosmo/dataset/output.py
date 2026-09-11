@@ -12,7 +12,6 @@ from opencosmo.io.schema import (
     make_schema,
 )
 from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter, NumpySource
-from opencosmo.spatial.region import HealpixRegion
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -100,12 +99,12 @@ def make_dataset_schema(
         cached_data_schema,
     )
 
-    new_data_attributes = data_schema.attributes.get("", {}) | {
+    new_data_attributes = data_schema.attributes | {
         "uuid": str(dataset_uuid),
         "main_uuid": str(dataset_uuid),
     }
     new_attributes = data_schema.attributes
-    new_attributes[""] = new_data_attributes
+    new_attributes |= new_data_attributes
     data_schema = data_schema._replace(attributes=new_attributes)
 
     children = {"data": data_schema}
@@ -117,8 +116,7 @@ def make_dataset_schema(
         tree_schema = tree.make_schema()
         children["index"] = tree_schema
         region = tree.get_region()
-        if isinstance(region, HealpixRegion):
-            header = header.with_region(region)
+        header = header.with_region(region)
 
     header_schema = header.dump()
     children["header"] = header_schema

@@ -82,7 +82,7 @@ def __dataset_positions(schema: Schema) -> dict[str, dict[int, int]]:
         raw_index = get_dataset_schema_index(child)
         if raw_index is None:
             raise ValueError(f"Dataset '{child_name}' has no output raw row index")
-        uuid = child.children["data"].attributes[""]["main_uuid"]
+        uuid = child.children["data"].attributes["main_uuid"]
         positions_by_uuid[str(uuid)] = __make_output_position_lookup(
             into_array(raw_index)
         )
@@ -97,7 +97,7 @@ def __lower_simulation_maps(schema: Schema) -> Schema:
     map_schema = schema.children["map"]
     if map_schema.map_coordinates is None:
         return schema
-    reference = str(map_schema.attributes[""]["reference"])
+    reference = str(map_schema.attributes["reference"])
     if reference not in positions_by_uuid:
         raise ValueError(
             "Simulation mapping reference dataset is not in the output schema"

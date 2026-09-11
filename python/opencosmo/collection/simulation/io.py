@@ -294,7 +294,7 @@ def __dataset_names_and_lookups(
     local_uuids = {}
     for name, child in schema.children.items():
         if child.type == FileEntry.DATASET:
-            local_uuids[str(child.children["data"].attributes[""]["main_uuid"])] = name
+            local_uuids[str(child.children["data"].attributes["main_uuid"])] = name
     uuid_to_name: dict[str, str] = {}
     for values in comm.allgather(local_uuids):
         for uuid, name in values.items():
@@ -340,7 +340,7 @@ def resort_simulation_collection_mpi(schema: Schema, comm: MPI.Comm):
         None,
     )
     assert map_attributes is not None
-    reference_uuid = str(map_attributes[""]["reference"])
+    reference_uuid = str(map_attributes["reference"])
     reference_name = uuid_to_name.get(reference_uuid)
     __collective_error(
         None

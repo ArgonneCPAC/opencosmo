@@ -3,12 +3,16 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
-from opencosmo.io.writer import Hdf5Source
+import numpy as np
+
+from opencosmo.io.writer import ColumnWriter, Hdf5Source
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from opencosmo.index import SimpleIndex
 
-    from .writer import ColumnWriter
+    from .writer import ColumnCombineStrategy
 
 
 class FileEntry(Enum):
@@ -33,7 +37,7 @@ class Schema(NamedTuple):
     type: FileEntry
     children: dict[str, Schema]
     columns: dict[str, ColumnWriter]
-    attributes: dict[str, Any]
+    attributes: dict[str, str | int | UUID]
     map_coordinates: MapCoordinateState | None = None
 
 
@@ -97,6 +101,38 @@ def make_schema(
     if attributes is None:
         attributes = {}
     return Schema(name, type_, children, columns, attributes)
+
+
+def add_metadata(
+    path: str,
+    schema: Schema,
+    metadata: dict[str, Any],
+    overrides: dict[str, ColumnCombineStrategy] | None = None,
+):
+    overrides = overrides or {}
+    writers = {}
+    if not path:
+        for name, ov in overrides.items():
+            if name not in metadata:
+                continue
+            column_data = np.array(metadata.pop(name))
+            writer = ColumnWriter.from_numpy_array(column_data, ov)
+            writers[name] = writer
+
+        new_schema = schema._replace(
+            attributes=schema.attributes | metadata, columns=schema.columns | writers
+        )
+        return new_schema
+    sep_index = path.find("/")
+    local_path = path[:sep_index] if sep_index != -1 else path
+    remainder = path[sep_index + 1 :] if sep_index != -1 else ""
+
+    child_schema = schema.children.get(local_path)
+    if child_schema is None:
+        child_schema = empty_schema(local_path, FileEntry.METADATA)
+
+    child_schema = add_metadata(remainder, child_schema, metadata, overrides)
+    return schema._replace(children=schema.children | {local_path: child_schema})
 
 
 def combine_with_cached_schema(raw_data_schema, cached_schema):
