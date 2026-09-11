@@ -6,7 +6,7 @@ from uuid import UUID
 
 import h5py
 import numpy as np
-from opencosmo.io.schema import FileEntry, MapCoordinateState, Schema
+from opencosmo.io.schema import FileEntry, Schema
 from opencosmo.io.writer import ColumnWriter
 
 from opencosmo.index import coalesce_chunks, get_data, into_array
@@ -151,7 +151,6 @@ class DatasetMatchSet:
             children,
             {},
             {"format_version": 1, "reference": str(new_uuids[source_alias])},
-            MapCoordinateState.RAW,
         )
 
 

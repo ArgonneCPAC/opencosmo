@@ -22,7 +22,8 @@ from opencosmo.dtypes import (
 from opencosmo.dtypes.units import apply_units
 from opencosmo.file import broadcast_read, file_reader, file_writer
 from opencosmo.io.schema import FileEntry, add_metadata, empty_schema
-from opencosmo.io.writer import ColumnCombineStrategy
+from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter
+from opencosmo.spatial.builders import from_model
 from opencosmo.units import UnitConvention
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from opencosmo.io.schema import Schema
+    from opencosmo.mpi import MPI
     from opencosmo.spatial.protocols import Region
 
 HEADER_WRITE_OVERRIDES = {"region_pixels": ColumnCombineStrategy.CONCAT}
@@ -209,6 +211,10 @@ class OpenCosmoHeader:
         for path, model in to_write:
             data = model.model_dump(by_alias=True, exclude_none=True)
             schema = add_metadata(path, schema, data, HEADER_WRITE_OVERRIDES)
+
+        file_schema = schema.children["file"]
+
+        schema.children["file"] = file_schema._replace(updater=combine_header_regions)
 
         return schema
 
@@ -577,3 +583,29 @@ def load_union_model(
                     f"Parsing header paramter model raised a validation error: \n {ve}"
                 )
     raise ValueError("Input attributes do not match any of the models in the union")
+
+
+def combine_header_regions(schema: Schema, comm: MPI.Comm):
+    metadata = schema.attributes | {
+        name: col.get_data() for name, col in schema.columns.items()
+    }
+    pars = FileParameters(**metadata)
+    if pars.region is None:
+        return schema
+
+    regions = comm.allgather(from_model(pars.region))
+    new_region = regions[0].combine(*regions[1:])
+    region_dump = {
+        f"region_{key}": val
+        for key, val in new_region.into_model().model_dump().items()
+    }
+    attribute_keys = set(schema.attributes).intersection(region_dump)
+    column_keys = set(schema.columns).intersection(region_dump)
+    new_attributes = schema.attributes | {
+        name: region_dump[name] for name in attribute_keys
+    }
+    new_columns = {
+        name: ColumnWriter.from_numpy_array(np.array(region_dump[name]))
+        for name in column_keys
+    }
+    return schema._replace(columns=new_columns, attributes=new_attributes)

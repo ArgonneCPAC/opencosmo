@@ -7,7 +7,10 @@ from uuid import UUID
 import numpy as np
 
 from opencosmo.collection import structure as sc
-from opencosmo.collection.simulation.io import resort_simulation_collection
+from opencosmo.collection.simulation.io import (
+    resort_simulation_collection,
+    update_mapping_uuids,
+)
 from opencosmo.column.select import do_multi_dataset_drops, do_multi_dataset_selections
 from opencosmo.dataset import Dataset
 from opencosmo.dataset import operations as dsops
@@ -316,7 +319,12 @@ class SimulationCollection:
             )
             children["map"] = match_set_schema
 
-        schema = make_schema("/", FileEntry.SIMULATION_COLLECTION, children=children)
+        schema = make_schema(
+            "/",
+            FileEntry.SIMULATION_COLLECTION,
+            children=children,
+            updater=update_mapping_uuids,
+        )
         return resort_simulation_collection(schema)
 
     def __map(

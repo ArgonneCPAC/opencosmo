@@ -8,12 +8,10 @@ import hdf5plugin
 import numpy as np
 from h5py import h5fd, h5p, h5s
 
-from opencosmo.dtypes.file import FileParameters
 from opencosmo.io.schema import FileEntry, Schema, make_schema
 from opencosmo.io.verify import schema_data_length, verify_structure
 from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter
 from opencosmo.mpi import MPI, get_all_keys, get_comm_world, get_subcom, sum_scatter
-from opencosmo.spatial.builders import from_model
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -95,9 +93,7 @@ def write_parallel(file: Path, file_schema: Schema):
         results = comm.allgather(CombineState.ZERO_LENGTH)
     else:
         try:
-            verify_structure(
-                file_schema, allow_unresolved_maps=True
-            )  # Tier 1: structural correctness
+            verify_structure(file_schema)  # Tier 1: structural correctness
             # Tier 2: does this rank actually contribute any rows?
             results = comm.allgather(CombineState.VALID)
         except ValueError:
@@ -145,72 +141,10 @@ def cleanup_mpi(comm_world: MPI.Comm, comm_write: MPI.Comm, group_write: MPI.Gro
 def sync_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
     from opencosmo.collection.simulation.io import resort_simulation_collection_mpi
 
-    schema = sync_uuids(schema, comm, {})
-    schema = sync_header_regions(schema, comm)
-
+    schema = update_and_verify_schemas(schema, comm)
     if schema.type == FileEntry.SIMULATION_COLLECTION:
         schema = resort_simulation_collection_mpi(schema, comm)
-    return verify_schemas(schema, comm)
-
-
-def sync_header_regions(schema, comm):
-    has_schema = comm.allgather(schema is not None)
-    subcomm = comm
-    subgroup = None
-    if not all(has_schema):
-        subcomm, subgroup = get_subcom(has_schema, comm)
-
-    if subcomm == MPI.COMM_NULL:
-        cleanup_mpi(comm, subcomm, subgroup)
-        return schema
-
-    child_names = get_all_keys(schema.children, subcomm)
-    if not child_names:
-        new_schema = schema
-    if "header" not in child_names:
-        new_children = {
-            name: sync_header_regions(schema.children.get(name), subcomm)
-            for name in child_names
-        }
-        new_children = {k: v for k, v in new_children.items() if v is not None}
-        new_schema = schema._replace(children=new_children)
-
-    else:
-        header = schema.children["header"]
-        file_pars = header.children["file"]
-        new_file_pars = __combine_header_regions(file_pars, subcomm)
-        new_header = header._replace(children=header.children | {"file": new_file_pars})
-        new_schema = schema._replace(children=schema.children | {"header": new_header})
-    if subgroup is not None:
-        cleanup_mpi(comm, subcomm, subgroup)
-    return new_schema
-
-
-def __combine_header_regions(schema, comm):
-
-    metadata = schema.attributes | {
-        name: col.get_data() for name, col in schema.columns.items()
-    }
-    pars = FileParameters(**metadata)
-    if pars.region is None:
-        return schema
-
-    regions = comm.allgather(from_model(pars.region))
-    new_region = regions[0].combine(*regions[1:])
-    region_dump = {
-        f"region_{key}": val
-        for key, val in new_region.into_model().model_dump().items()
-    }
-    attribute_keys = set(schema.attributes).intersection(region_dump)
-    column_keys = set(schema.columns).intersection(region_dump)
-    new_attributes = schema.attributes | {
-        name: region_dump[name] for name in attribute_keys
-    }
-    new_columns = {
-        name: ColumnWriter.from_numpy_array(np.array(region_dump[name]))
-        for name in column_keys
-    }
-    return schema._replace(columns=new_columns, attributes=new_attributes)
+    return schema
 
 
 def __verify_structure_collective(schema: Schema, comm: MPI.Comm) -> None:
@@ -226,83 +160,7 @@ def __verify_structure_collective(schema: Schema, comm: MPI.Comm) -> None:
         raise ValueError(invalid_message)
 
 
-def sync_uuids(schema: Schema, comm: MPI.Comm, uuid_map: dict[str, str]) -> Schema:
-    """Synchronize dataset identities and update mapping schemas.
-
-    A rank may have an empty schema for a child that is present on another rank.  Keep
-    those ranks in the collectives here instead of creating a sub-communicator: they
-    still need the UUID mappings when a map is present locally.
-    """
-
-    def collect(current: Schema) -> None:
-        if current.name == "data":
-            local_uuid = current.attributes.get("main_uuid")
-            all_uuids = comm.allgather(local_uuid)
-            canonical_uuid = next(
-                (value for value in all_uuids if value is not None), None
-            )
-            if canonical_uuid is not None:
-                for old_uuid in all_uuids:
-                    if old_uuid is not None:
-                        uuid_map[str(old_uuid)] = str(canonical_uuid)
-
-        for cname in get_all_keys(current.children, comm):
-            child_schema = current.children.get(cname)
-            collect(child_schema or make_schema(cname, FileEntry.EMPTY))
-
-    def rewrite(current: Schema) -> Schema:
-        rewritten_children = {}
-        for cname in get_all_keys(current.children, comm):
-            child_schema = current.children.get(cname)
-            rewritten_child = rewrite(
-                child_schema or make_schema(cname, FileEntry.EMPTY)
-            )
-            if child_schema is not None:
-                rewritten_children[cname] = rewritten_child
-
-        attributes = current.attributes
-        if current.name == "data":
-            new_uuid = uuid_map.get(str(current.attributes.get("main_uuid")))
-            if new_uuid is not None:
-                attributes = current.attributes | {
-                    "uuid": new_uuid,
-                    "main_uuid": new_uuid,
-                }
-
-        if current.name == "map":
-            if "reference" in current.attributes:
-                reference = str(current.attributes["reference"])
-                attributes = current.attributes | {
-                    "reference": uuid_map.get(reference, reference)
-                }
-
-            for parent_name in ("primary", "auxiliary"):
-                parent = rewritten_children.get(parent_name)
-                if parent is None:
-                    continue
-                renamed_children = {}
-                for child_name, child_schema in parent.children.items():
-                    if parent_name == "primary":
-                        new_name = uuid_map.get(child_name, child_name)
-                    else:
-                        endpoints = child_name.split("__")
-                        new_name = "__".join(
-                            uuid_map.get(endpoint, endpoint) for endpoint in endpoints
-                        )
-                    renamed_children[new_name] = child_schema._replace(name=new_name)
-                rewritten_children[parent_name] = parent._replace(
-                    children=renamed_children
-                )
-
-        return current._replace(children=rewritten_children, attributes=attributes)
-
-    collect(schema)
-    schema = rewrite(schema)
-
-    return schema
-
-
-def verify_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
+def update_and_verify_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
     """
     By this stage, we know that all the ranks that are participating have a valid
     file schema. We now need to verify that they can be made consistent across ranks.
@@ -318,7 +176,8 @@ def verify_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
         raise ValueError(
             "Unable to combine file schemas, as they do not have the same type!"
         )
-
+    if schema.updater is not None:
+        schema = schema.updater(schema, comm)
     verify_columns(schema.columns, comm)
     new_attributes = sync_attributes(schema.attributes, schema.name, comm)
     schema = schema._replace(attributes=new_attributes)
@@ -337,7 +196,9 @@ def verify_schemas(schema: Schema, comm: MPI.Comm) -> Schema:
             new_comm = comm.Create(new_group)
             group.Free()
         if child_name in schema.children:
-            new_schema = verify_schemas(schema.children[child_name], new_comm)
+            new_schema = update_and_verify_schemas(
+                schema.children[child_name], new_comm
+            )
             schema.children[child_name] = new_schema
         # Free only the sub-communicator/group we created; never the parent comm.
         if new_group is not None:
@@ -396,11 +257,11 @@ def verify_columns(columns: dict[str, ColumnWriter], comm: MPI.Comm):
 
 
 def sync_attributes(metadata: dict[str, Any], group_name: str, comm: MPI.Comm):
-
     all_metadata = comm.allgather(metadata)
 
     for md in all_metadata[1:]:
         if md != all_metadata[0]:
+            print(md, all_metadata[0])
             raise ValueError(
                 f"Not all ranks recieved the same metadata in {group_name}"
             )

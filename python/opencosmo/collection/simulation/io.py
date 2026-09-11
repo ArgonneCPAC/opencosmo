@@ -10,6 +10,7 @@ from opencosmo.index import into_array
 from opencosmo.io.schema import (
     FileEntry,
     Schema,
+    empty_schema,
     get_dataset_schema_index,
     reorder_dataset_schema,
 )
@@ -560,3 +561,62 @@ def update_dataset_schema_with_redistribute(
         new_columns[name] = writer
     new_data = schema.children["data"]._replace(columns=new_columns)
     return schema._replace(children=schema.children | {"data": new_data})
+
+
+def update_mapping_uuids(schema: Schema, comm):
+    uuid_map = collect_uuids(schema, comm)
+    mapping_schema = schema.children["map"]
+
+    reference = str(mapping_schema.attributes["reference"])
+    attributes = mapping_schema.attributes | {
+        "reference": uuid_map.get(reference, reference)
+    }
+    new_children = mapping_schema.children
+    new_children["primary"] = rewrite_primary(
+        mapping_schema.children["primary"], uuid_map
+    )
+    if "auxiliary" in mapping_schema.children:
+        new_children["auxiliary"] = rewrite_auxiliary(
+            mapping_schema.children["auxiliary"], uuid_map
+        )
+    new_mapping = mapping_schema._replace(attributes=attributes, children=new_children)
+
+    return schema._replace(children=schema.children | {"map": new_mapping})
+
+
+def rewrite_primary(schema: Schema, uuid_map):
+    new_children = {}
+    for uuid, schema in schema.children.items():
+        new_uuid = uuid_map[uuid]
+        new_children[new_uuid] = schema._replace(name=new_uuid)
+    return schema._replace(children=new_children)
+
+
+def rewrite_auxiliary(schema: Schema, uuid_map):
+    new_children = {}
+    for aux_name, aux_schema in schema.children.items():
+        (uuid_a, uuid_b) = aux_name.split("__")
+        new_name = "__".join([uuid_map[uuid_a], uuid_map[uuid_b]])
+        new_children[new_name] = aux_schema._replace(name=new_name)
+
+    return schema._replace(children=new_children)
+
+
+def collect_uuids(schema: Schema, comm) -> dict[str, str]:
+    uuid_map = {}
+    if schema.name == "data":
+        local_uuid = str(schema.attributes.get("main_uuid"))
+        all_uuids = comm.allgather(local_uuid)
+        canonical_uuid = next((value for value in all_uuids if value is not None), None)
+        assert canonical_uuid is not None
+
+        uuid_map[local_uuid] = canonical_uuid
+        return uuid_map
+
+    for cname in get_all_keys(schema.children, comm):
+        child_schema = schema.children.get(cname)
+        uuid_map |= collect_uuids(
+            child_schema or empty_schema(cname, FileEntry.EMPTY), comm
+        )
+
+    return uuid_map

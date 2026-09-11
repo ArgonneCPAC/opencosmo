@@ -95,8 +95,6 @@ def __lower_simulation_maps(schema: Schema) -> Schema:
 
     positions_by_uuid = __dataset_positions(schema)
     map_schema = schema.children["map"]
-    if map_schema.map_coordinates is None:
-        return schema
     reference = str(map_schema.attributes["reference"])
     if reference not in positions_by_uuid:
         raise ValueError(
@@ -150,7 +148,6 @@ def __lower_simulation_maps(schema: Schema) -> Schema:
                 children=auxiliary_children
             ),
         },
-        map_coordinates=None,
     )
     return schema._replace(children=schema.children | {"map": lowered_map})
 

@@ -372,7 +372,6 @@ def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
         state.region,
         state.raw_index,
         derived_data,
-        # Writing creates a new persistent dataset, so do not reuse the runtime state UUID.
         uuid4(),
         name,
     )

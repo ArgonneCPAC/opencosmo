@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from opencosmo.header import OpenCosmoHeader
     from opencosmo.index import DataIndex
     from opencosmo.io.schema import Schema
+    from opencosmo.mpi import MPI
     from opencosmo.spatial.protocols import Region
     from opencosmo.spatial.tree import Tree
 
@@ -102,7 +103,7 @@ def make_dataset_schema(
     }
     new_attributes = data_schema.attributes
     new_attributes |= new_data_attributes
-    data_schema = data_schema._replace(attributes=new_attributes)
+    data_schema = data_schema._replace(attributes=new_attributes, updater=update_uuid)
 
     children = {"data": data_schema}
     if name is None:
@@ -121,3 +122,11 @@ def make_dataset_schema(
     if (load_conditions := raw_data_handler.load_conditions) is not None:
         schema = add_metadata("load/if", schema, load_conditions)
     return schema
+
+
+def update_uuid(schema: Schema, comm: MPI.Comm | None):
+    if comm is None:
+        return schema
+    uuid = comm.bcast(schema.attributes["uuid"])
+    new_attributes = {"uuid": uuid, "main_uuid": uuid}
+    return schema._replace(attributes=new_attributes)

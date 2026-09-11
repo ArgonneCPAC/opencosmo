@@ -11,7 +11,7 @@ import opencosmo.collection.simulation.io as simulation_io
 import opencosmo.collection.simulation.simulation as simulation_module
 import opencosmo.mapping.write as mapping_write
 import pytest
-from opencosmo.io.schema import FileEntry, MapCoordinateState, make_schema
+from opencosmo.io.schema import FileEntry, make_schema
 from opencosmo.io.serial import allocate
 from opencosmo.io.verify import verify_structure
 from opencosmo.mapping.mapping import DatasetMatchSet, rebuild_single_with_new_source
@@ -827,7 +827,7 @@ def test_unresolved_mapping_schema_is_rejected_by_generic_verification(tmp_path)
                 "map",
                 FileEntry.METADATA,
                 attributes={},
-            )._replace(map_coordinates=MapCoordinateState.RAW)
+            )
         },
     )
 
