@@ -826,7 +826,7 @@ def test_unresolved_mapping_schema_is_rejected_by_generic_verification(tmp_path)
             "map": make_schema(
                 "map",
                 FileEntry.METADATA,
-                attributes={"": {}},
+                attributes={},
             )._replace(map_coordinates=MapCoordinateState.RAW)
         },
     )

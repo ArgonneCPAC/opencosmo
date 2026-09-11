@@ -172,8 +172,7 @@ def sync_uuids(schema: Schema, comm: MPI.Comm, uuid_map: dict[str, str]) -> Sche
 
     def collect(current: Schema) -> None:
         if current.name == "data":
-            metadata = current.attributes.get("")
-            local_uuid = None if metadata is None else metadata.get("main_uuid")
+            local_uuid = current.attributes.get("main_uuid")
             all_uuids = comm.allgather(local_uuid)
             canonical_uuid = next(
                 (value for value in all_uuids if value is not None), None
@@ -199,20 +198,18 @@ def sync_uuids(schema: Schema, comm: MPI.Comm, uuid_map: dict[str, str]) -> Sche
 
         attributes = current.attributes
         if current.name == "data":
-            metadata = current.attributes.get("")
-            if metadata is not None:
-                new_uuid = uuid_map.get(str(metadata.get("main_uuid")))
-                if new_uuid is not None:
-                    attributes = current.attributes | {
-                        "": metadata | {"uuid": new_uuid, "main_uuid": new_uuid}
-                    }
+            new_uuid = uuid_map.get(str(current.attributes.get("main_uuid")))
+            if new_uuid is not None:
+                attributes = current.attributes | {
+                    "uuid": new_uuid,
+                    "main_uuid": new_uuid,
+                }
 
         if current.name == "map":
-            metadata = current.attributes.get("")
-            if metadata is not None and "reference" in metadata:
-                reference = str(metadata["reference"])
+            if "reference" in current.attributes:
+                reference = str(current.attributes["reference"])
                 attributes = current.attributes | {
-                    "": metadata | {"reference": uuid_map.get(reference, reference)}
+                    "reference": uuid_map.get(reference, reference)
                 }
 
             for parent_name in ("primary", "auxiliary"):
@@ -338,7 +335,9 @@ def sync_attributes(metadata: dict[str, Any], group_name: str, comm: MPI.Comm):
     all_metadata = comm.allgather(metadata)
     for md in all_metadata[1:]:
         if md != all_metadata[0]:
-            raise ValueError("Not all ranks recieved the same metadata!")
+            raise ValueError(
+                f"Not all ranks recieved the same metadata in {group_name}"
+            )
     return metadata
 
 
@@ -525,11 +524,11 @@ def __write_metadata(
     else:
         attrs = comm.allgather(schema.attributes)
 
-    attrs_to_write = list(filter(lambda at: at is not None, attrs))[0]
+    attrs_to_write = list(filter(lambda at: at is not None, attrs))
+    if not attrs_to_write:
+        return
     if group is not None:
-        for path, metadata in attrs_to_write.items():
-            metadata_group = group.require_group(path) if path else group
-            metadata_group.attrs.update(metadata)
+        group.attrs.update(attrs_to_write[0])
 
 
 def __allocate_column(

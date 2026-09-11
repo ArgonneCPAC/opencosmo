@@ -169,7 +169,7 @@ def test_sync_uuids_rewrites_asymmetric_map_children_before_lowering():
             FileEntry.COLUMNS,
             {},
             {},
-            {"": {"main_uuid": uuid, "uuid": uuid}},
+            {"main_uuid": uuid, "uuid": uuid},
         )
 
     primary = Schema(
@@ -215,7 +215,7 @@ def test_sync_uuids_rewrites_asymmetric_map_children_before_lowering():
                     ),
                 },
                 {},
-                {"": {"reference": reference_uuid}},
+                {"reference": reference_uuid},
                 MapCoordinateState.RAW,
             ),
         },
@@ -227,7 +227,7 @@ def test_sync_uuids_rewrites_asymmetric_map_children_before_lowering():
     map_schema = synchronized.children["map"]
     expected_reference = "reference-0"
     expected_target = "target-0"
-    parallel_assert(map_schema.attributes[""]["reference"] == expected_reference)
+    parallel_assert(map_schema.attributes["reference"] == expected_reference)
     parallel_assert(set(map_schema.children["primary"].children) == {expected_target})
     parallel_assert(
         set(map_schema.children["auxiliary"].children)

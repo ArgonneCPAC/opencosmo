@@ -150,7 +150,7 @@ class DatasetMatchSet:
             FileEntry.METADATA,
             children,
             {},
-            {"": {"format_version": 1, "reference": new_uuids[source_alias]}},
+            {"format_version": 1, "reference": str(new_uuids[source_alias])},
             MapCoordinateState.RAW,
         )
 

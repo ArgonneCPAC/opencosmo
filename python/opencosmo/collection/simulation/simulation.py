@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import copy
 from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, Optional, cast
+from uuid import UUID
 
 import numpy as np
 
@@ -287,15 +288,16 @@ class SimulationCollection:
     def make_schema(self) -> Schema:
         children = {}
 
-        new_uuids = {}
+        new_uuids: dict[str, UUID] = {}
         indices = {}
         self.__rebuild_all()
 
         for name, dataset in self.__datasets.items():
             if isinstance(dataset, DatasetState):
                 children[name] = st.make_schema(dataset)
-                new_uuids[name] = (
-                    children[name].children["data"].attributes[""]["main_uuid"]
+
+                new_uuids[name] = UUID(
+                    cast("str", children[name].children["data"].attributes["main_uuid"])
                 )
                 indices[name] = dataset.raw_index
                 continue
@@ -303,8 +305,8 @@ class SimulationCollection:
             children[name] = dataset.make_schema()
             if isinstance(dataset, sc.StructureCollection):
                 continue
-            new_uuids[name] = (
-                children[name].children["data"].attributes[""]["main_uuid"]
+            new_uuids[name] = UUID(
+                children[name].children["data"].attributes["main_uuid"]
             )
             indices[name] = dataset.index
 

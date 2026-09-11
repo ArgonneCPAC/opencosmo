@@ -21,8 +21,8 @@ from opencosmo.dtypes import (
 )
 from opencosmo.dtypes.units import apply_units
 from opencosmo.file import broadcast_read, file_reader, file_writer
-from opencosmo.io.schema import FileEntry, make_schema
-from opencosmo.io.writer import ColumnCombineStrategy, ColumnWriter
+from opencosmo.io.schema import FileEntry, add_metadata, empty_schema
+from opencosmo.io.writer import ColumnCombineStrategy
 from opencosmo.units import UnitConvention
 
 if TYPE_CHECKING:
@@ -204,30 +204,13 @@ class OpenCosmoHeader:
             self.__optional_origin_parameters.items(),
             self.__dtype_parameters.items(),
         )
-        pars = {}
-        arr_pars = {}
+        schema = empty_schema("header", FileEntry.METADATA)
+
         for path, model in to_write:
             data = model.model_dump(by_alias=True, exclude_none=True)
-            data = dict(
-                map(
-                    lambda kv: (kv[0], kv[1] if kv[1] is not None else ""), data.items()
-                )
-            )
+            schema = add_metadata(path, schema, data, HEADER_WRITE_OVERRIDES)
 
-            keys = list(data.keys())
-
-            for key in keys:
-                if isinstance(data[key], list):
-                    arr_pars[f"{path}/{key}"] = ColumnWriter.from_numpy_array(
-                        np.array(data[key]),
-                        HEADER_WRITE_OVERRIDES.get(key, ColumnCombineStrategy.EXACT),
-                    )
-                    _ = data.pop(key)
-            pars[path] = data
-
-        return make_schema(
-            "header", FileEntry.METADATA, attributes=pars, columns=arr_pars
-        )
+        return schema
 
     def write(self, file: h5py.File | h5py.Group) -> None:
         write_header_attributes(file, "file", self.__file_pars)
