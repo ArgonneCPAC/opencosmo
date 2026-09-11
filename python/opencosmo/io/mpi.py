@@ -524,11 +524,11 @@ def __write_metadata(
     else:
         attrs = comm.allgather(schema.attributes)
 
-    attrs_to_write = list(filter(lambda at: at is not None, attrs))[0]
+    attrs_to_write = list(filter(lambda at: at is not None, attrs))
+    if not attrs_to_write:
+        return
     if group is not None:
-        for path, metadata in attrs_to_write.items():
-            metadata_group = group.require_group(path) if path else group
-            metadata_group.attrs.update(metadata)
+        group.attrs.update(attrs_to_write[0])
 
 
 def __allocate_column(
