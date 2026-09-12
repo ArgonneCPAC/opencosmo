@@ -22,7 +22,7 @@ from opencosmo.handler.empty import EmptyHandler
 from opencosmo.handler.hdf5 import Hdf5Handler
 from opencosmo.index import from_size, reindex_column, single_chunk
 from opencosmo.index.mask import into_array
-from opencosmo.mpi import gather_index, get_comm_world, verify_redistribution
+from opencosmo.mpi import gather_index, get_comm_world
 from opencosmo.plugins.contexts import (
     DatasetInstantiateCtx,
     HookPoint,
@@ -534,7 +534,6 @@ def redistribute(state: DatasetState, rows):
 
     comm = get_comm_world()
     assert comm is not None
-    verify_redistribution(state.raw_index, rows, comm)
 
     if cached_columns_to_keep:
         reorder_map = None

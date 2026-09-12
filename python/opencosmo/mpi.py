@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import numpy as np
 
-from opencosmo.index import coalesce_chunks, get_length, into_array, project, sort
+from opencosmo.index import coalesce_chunks, into_array, sort
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRichComparison
@@ -273,18 +273,6 @@ def redistribute_data(data: np.ndarray, target_rank: np.ndarray, comm: MPI.Comm)
         [recvbuf, recv_lengths, recv_displs, dtype],
     )
     return recvbuf.reshape((int(np.sum(recv_row_lengths)), *data.shape[1:]))
-
-
-def verify_redistribution(old_index: np.ndarray, new_index: np.ndarray, comm: MPI.Comm):
-    old_index = gather_index(old_index, comm, sorted=True)
-    new_index = gather_index(new_index, comm, sorted=True)
-    return
-    if comm.Get_rank() != 0:
-        parallel_assert(True)
-        return
-    projection = project(new_index, old_index)
-
-    parallel_assert(get_length(projection) == get_length(old_index))
 
 
 def get_all_keys[T: SupportsRichComparison](

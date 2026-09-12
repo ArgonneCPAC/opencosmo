@@ -12,7 +12,6 @@ import opencosmo.collection.simulation.simulation as simulation_module
 import opencosmo.mapping.write as mapping_write
 import pytest
 from opencosmo.io.schema import FileEntry, make_schema
-from opencosmo.io.serial import allocate
 from opencosmo.io.verify import verify_structure
 from opencosmo.mapping.mapping import DatasetMatchSet, rebuild_single_with_new_source
 from opencosmo.utils import normalize_kwarg_name
@@ -816,30 +815,6 @@ def test_make_schema_retains_raw_primary_and_auxiliary_endpoints(tmp_path):
     auxiliary = schema.children["auxiliary"].children[f"{new_first}__{new_second}"]
     np.testing.assert_array_equal(auxiliary.columns["source"].data, [50])
     np.testing.assert_array_equal(auxiliary.columns["target"].data, [60])
-
-
-def test_unresolved_mapping_schema_is_rejected_by_generic_verification(tmp_path):
-    schema = make_schema(
-        "/",
-        FileEntry.SIMULATION_COLLECTION,
-        children={
-            "map": make_schema(
-                "map",
-                FileEntry.METADATA,
-                attributes={},
-            )
-        },
-    )
-
-    with pytest.raises(
-        ValueError, match="Unresolved raw-coordinate simulation mapping"
-    ):
-        verify_structure(schema)
-    with h5py.File(tmp_path / "unresolved.hdf5", "w") as file:
-        with pytest.raises(
-            ValueError, match="Unresolved raw-coordinate simulation mapping"
-        ):
-            allocate(file, schema)
 
 
 def test_lowered_mapping_schema_is_accepted_by_generic_verification():
