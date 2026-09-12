@@ -196,8 +196,6 @@ def write(path: Path, dataset: Writeable, overwrite=False, **schema_kwargs) -> N
 
     if schema.type == FileEntry.SIMULATION_COLLECTION:
         schema = lower_collection_coordinates(schema, canonical_raw_order=True)
-    elif schema.type == FileEntry.STRUCTURE_COLLECTION:
-        schema = lower_collection_coordinates(schema, canonical_raw_order=False)
     from opencosmo.io.verify import verify_structure
 
     verify_structure(schema)

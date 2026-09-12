@@ -585,11 +585,13 @@ def load_union_model(
     raise ValueError("Input attributes do not match any of the models in the union")
 
 
-def combine_header_regions(schema: Schema, comm: MPI.Comm):
+def combine_header_regions(schema: Schema, comm: MPI.Comm | None) -> Schema:
+    if comm is None:
+        return schema
     metadata = schema.attributes | {
         name: col.get_data() for name, col in schema.columns.items()
     }
-    pars = FileParameters(**metadata)
+    pars = FileParameters(**metadata)  # type: ignore
     if pars.region is None:
         return schema
 

@@ -1753,5 +1753,4 @@ class StructureCollection:
 
         if name is None:
             name = ""
-        print(children.keys())
         return make_schema(name, FileEntry.STRUCTURE_COLLECTION, children=children)

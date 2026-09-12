@@ -559,6 +559,13 @@ class Lightcone(dict):
         for step in all_steps:
             datasets = output_datasets.get(step, {})
             if len(datasets) == 0:
+                # This rank has no data for this step, but every rank must still
+                # enter the collectives inside stack_lightcone_datasets_in_schema
+                # (get_all_keys / get_stacked_lightcone_order / sync_headers) in
+                # lockstep, or cross-rank collectives mispair across steps.
+                stack_lightcone_datasets_in_schema(
+                    datasets, "/".join([path, str(step)]), None, no_stack
+                )
                 continue
 
             all_datasets = list(chain(*tuple(lst for lst in datasets.values())))
