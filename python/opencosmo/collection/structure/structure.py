@@ -1719,7 +1719,7 @@ class StructureCollection:
         else:
             raise AttributeError("This collection does not contain galaxies!")
 
-    def make_schema(self, name: Optional[str] = None, **kwargs) -> Schema:
+    def make_schema(self, path: str, **kwargs) -> Schema:
         children = {}
         source_name = self.__source.dtype
         datasets = self.__handler.resort(self.__source, self.__get_datasets())
@@ -1727,15 +1727,21 @@ class StructureCollection:
             {"no_stack": True} if isinstance(self.__source, lc.Lightcone) else {}
         )
 
-        source_schema = self.__source.make_schema(**schema_kwargs)
+        source_schema = self.__source.make_schema(
+            **schema_kwargs, path="/".join([path, source_name])
+        )
         if len(self.__source) > 0:
-            source_schema = self.__handler.make_schema(self.__source, source_schema)
+            children[source_name] = source_schema = self.__handler.make_schema(
+                self.__source, source_schema
+            )
             children[source_name] = rebuild_data_linked(source_schema)
 
         for name, dataset in datasets.items():
             if name == "galaxies":
                 name = "galaxy_properties"
-            ds_schema = dataset.make_schema(**schema_kwargs)
+            ds_schema = dataset.make_schema(
+                **schema_kwargs, path="/".join([path, name])
+            )
             if not isinstance(dataset, StructureCollection):
                 children[name] = ds_schema
                 continue

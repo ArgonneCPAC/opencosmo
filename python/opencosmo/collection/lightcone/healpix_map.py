@@ -532,10 +532,10 @@ class HealpixMap(dict):
             )
         return output
 
-    def make_schema(self) -> Schema:
+    def make_schema(self, path: str) -> Schema:
         children = {}
         for name, dataset in self.items():
-            ds_schema = dataset.make_schema()
+            ds_schema = dataset.make_schema("/".join([path, name]))
             children[name] = ds_schema
         if len(children) == 1:
             schema = next(iter(children.values()))

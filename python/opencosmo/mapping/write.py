@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Mapping
 
 import numpy as np
-from opencosmo.collection.structure.handler import LINK_ALIASES
 from opencosmo.io.schema import FileEntry, get_dataset_schema_index
 from opencosmo.io.writer import ColumnWriter
 
@@ -95,8 +94,6 @@ def __lower_simulation_maps(schema: Schema) -> Schema:
 
     positions_by_uuid = __dataset_positions(schema)
     map_schema = schema.children["map"]
-    if map_schema.map_coordinates is None:
-        return schema
     reference = str(map_schema.attributes["reference"])
     if reference not in positions_by_uuid:
         raise ValueError(
@@ -150,7 +147,6 @@ def __lower_simulation_maps(schema: Schema) -> Schema:
                 children=auxiliary_children
             ),
         },
-        map_coordinates=None,
     )
     return schema._replace(children=schema.children | {"map": lowered_map})
 
@@ -162,111 +158,6 @@ def __step_name(name: str | int) -> str:
         if "_" in name and name.split("_", 1)[0].isdigit()
         else name
     )
-
-
-def __target_schema(source: Schema, root: Schema, prefix: str) -> Schema:
-    alias = LINK_ALIASES[prefix]
-    source_name = __step_name(source.name)
-    candidates: list[Schema] = []
-
-    def collect(schema: Schema) -> None:
-        if schema.type == FileEntry.DATASET and __step_name(schema.name) == alias:
-            candidates.append(schema)
-        for child in schema.children.values():
-            collect(child)
-
-    collect(root)
-    source_schema_name = str(source.name)
-    step = source_schema_name.split("_", 1)[0] if "_" in source_schema_name else None
-    if step is not None:
-        candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.name.startswith(f"{step}_")
-        ]
-    if source_name == "galaxy_properties":
-        nested = [
-            candidate for candidate in candidates if "galaxies_" in candidate.name
-        ]
-        if nested:
-            candidates = nested
-    elif len(candidates) > 1:
-        direct = [
-            candidate for candidate in candidates if "galaxies_" not in candidate.name
-        ]
-        if direct:
-            candidates = direct
-    if len(candidates) != 1:
-        raise ValueError(
-            f"Unable to resolve output target for structure link '{prefix}'"
-        )
-    return candidates[0]
-
-
-def __lower_structure_dataset(
-    source: Schema, root: Schema, available_prefixes: frozenset[str]
-) -> Schema:
-    linked = source.children.get("data_linked")
-    if linked is None:
-        return source
-    columns = dict(linked.columns)
-    for name, writer in linked.columns.items():
-        if name.endswith("_idx"):
-            prefix = name.removesuffix("_idx")
-        elif name.endswith("_start"):
-            prefix = name.removesuffix("_start")
-        else:
-            continue
-        if prefix not in available_prefixes:
-            continue
-        try:
-            target = __target_schema(source, root, prefix)
-        except ValueError:
-            columns[name] = (
-                __lower_idx_writer(writer)
-                if name.endswith("_idx")
-                else __lower_start_writer(writer, linked.columns[f"{prefix}_size"])
-            )
-            continue
-        raw_index = get_dataset_schema_index(target)
-        if raw_index is None:
-            raise ValueError(
-                f"Structure link target '{prefix}' has no output raw row index"
-            )
-        columns[name] = __lower_primary_writer(
-            writer, __make_output_position_lookup(into_array(raw_index))
-        )
-    return source._replace(
-        children=source.children | {"data_linked": linked._replace(columns=columns)}
-    )
-
-
-def __lower_idx_writer(writer: ColumnWriter) -> ColumnWriter:
-    data = writer.data
-    valid = data >= 0
-    result = np.full(len(data), -1, dtype=np.int64)
-    result[valid] = np.arange(valid.sum(), dtype=np.int64)
-    return ColumnWriter.from_numpy_array(result, writer.combine_strategy, writer.attrs)
-
-
-def __lower_start_writer(
-    writer: ColumnWriter, size_writer: ColumnWriter
-) -> ColumnWriter:
-    starts = np.insert(np.cumsum(size_writer.data), 0, 0)[:-1]
-    return ColumnWriter.from_numpy_array(starts, writer.combine_strategy, writer.attrs)
-
-
-def __lower_structure_links(
-    schema: Schema, root: Schema, available_prefixes: frozenset[str]
-) -> Schema:
-    children = {
-        name: __lower_structure_links(child, root, available_prefixes)
-        for name, child in schema.children.items()
-    }
-    schema = schema._replace(children=children)
-    if schema.type == FileEntry.DATASET:
-        return __lower_structure_dataset(schema, root, available_prefixes)
-    return schema
 
 
 def lower_collection_coordinates(
@@ -284,14 +175,4 @@ def lower_collection_coordinates(
                 "Canonical raw-order lowering requires a simulation collection"
             )
         return __lower_simulation_maps(schema)
-    if schema.type != FileEntry.STRUCTURE_COLLECTION:
-        raise ValueError("Structure-link lowering requires a structure collection")
-    target_names = set(schema.children)
-    available_prefixes = frozenset(
-        prefix
-        for prefix, alias in LINK_ALIASES.items()
-        if alias in target_names
-        or any(name.endswith(f"_{alias}") for name in target_names)
-        or (alias == "galaxy_properties" and "galaxies" in target_names)
-    )
-    return __lower_structure_links(schema, schema, available_prefixes)
+    return schema

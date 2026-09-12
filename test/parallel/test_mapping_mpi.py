@@ -9,9 +9,7 @@ import numpy as np
 import opencosmo.collection.simulation.io as simulation_io
 import pytest
 from mpi4py import MPI
-from opencosmo.io.mpi import sync_uuids
-from opencosmo.io.schema import FileEntry, MapCoordinateState, Schema
-from opencosmo.io.writer import ColumnWriter
+from opencosmo.io.schema import FileEntry, Schema
 from opencosmo.utils import normalize_kwarg_name
 from pytest_mpi import parallel_assert
 
@@ -154,85 +152,6 @@ def test_mpi_auxiliary_lowering_routes_remote_target_to_source_owner():
     )
     parallel_assert(np.array_equal(source, expected_source))
     parallel_assert(np.array_equal(target, expected_target))
-
-
-@pytest.mark.parallel(nprocs=4)
-def test_sync_uuids_rewrites_asymmetric_map_children_before_lowering():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    reference_uuid = f"reference-{rank}"
-    target_uuid = f"target-{rank}"
-
-    def data(uuid: str) -> Schema:
-        return Schema(
-            "data",
-            FileEntry.COLUMNS,
-            {},
-            {},
-            {"main_uuid": uuid, "uuid": uuid},
-        )
-
-    primary = Schema(
-        target_uuid,
-        FileEntry.COLUMNS,
-        {},
-        {"index": ColumnWriter.from_numpy_array(np.empty(0, dtype=np.int64))},
-        {},
-    )
-    auxiliary = Schema(
-        f"{reference_uuid}__{target_uuid}",
-        FileEntry.COLUMNS,
-        {},
-        {
-            "source": ColumnWriter.from_numpy_array(np.empty(0, dtype=np.int64)),
-            "target": ColumnWriter.from_numpy_array(np.empty(0, dtype=np.int64)),
-        },
-        {},
-    )
-    schema = Schema(
-        "/",
-        FileEntry.SIMULATION_COLLECTION,
-        {
-            "reference": Schema(
-                "reference", FileEntry.DATASET, {"data": data(reference_uuid)}, {}, {}
-            ),
-            "target": Schema(
-                "target", FileEntry.DATASET, {"data": data(target_uuid)}, {}, {}
-            ),
-            "map": Schema(
-                "map",
-                FileEntry.METADATA,
-                {
-                    "primary": Schema(
-                        "primary", FileEntry.COLUMNS, {target_uuid: primary}, {}, {}
-                    ),
-                    "auxiliary": Schema(
-                        "auxiliary",
-                        FileEntry.COLUMNS,
-                        {f"{reference_uuid}__{target_uuid}": auxiliary},
-                        {},
-                        {},
-                    ),
-                },
-                {},
-                {"reference": reference_uuid},
-                MapCoordinateState.RAW,
-            ),
-        },
-        {},
-        {},
-    )
-
-    synchronized = sync_uuids(schema, comm, {})
-    map_schema = synchronized.children["map"]
-    expected_reference = "reference-0"
-    expected_target = "target-0"
-    parallel_assert(map_schema.attributes["reference"] == expected_reference)
-    parallel_assert(set(map_schema.children["primary"].children) == {expected_target})
-    parallel_assert(
-        set(map_schema.children["auxiliary"].children)
-        == {f"{expected_reference}__{expected_target}"}
-    )
 
 
 def _expected_pairwise_maps(mapping_path: Path, mapped_paths):

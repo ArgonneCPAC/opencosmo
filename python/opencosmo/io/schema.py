@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
 
 import numpy as np
 
@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from opencosmo.index import SimpleIndex
+    from opencosmo.mpi import MPI
 
 
 class FileEntry(Enum):
@@ -26,17 +27,13 @@ class FileEntry(Enum):
     EMPTY = "empty"
 
 
-class MapCoordinateState(Enum):
-    RAW = "raw"
-
-
 class Schema(NamedTuple):
     name: str
     type: FileEntry
     children: dict[str, Schema]
     columns: dict[str, ColumnWriter]
     attributes: dict[str, str | int | UUID]
-    map_coordinates: MapCoordinateState | None = None
+    updater: Callable[[Schema, MPI.Comm | None], Schema] | None = None
 
 
 def dataset_schema_length(schema: Schema) -> Optional[int]:
@@ -91,6 +88,7 @@ def make_schema(
     children: Optional[dict] = None,
     columns: Optional[dict] = None,
     attributes: Optional[dict] = None,
+    updater: Callable | None = None,
 ):
     if children is None:
         children = {}
@@ -98,7 +96,7 @@ def make_schema(
         columns = {}
     if attributes is None:
         attributes = {}
-    return Schema(name, type_, children, columns, attributes)
+    return Schema(name, type_, children, columns, attributes, updater=updater)
 
 
 def add_metadata(

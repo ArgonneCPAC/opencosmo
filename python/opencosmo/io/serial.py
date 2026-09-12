@@ -11,9 +11,6 @@ if TYPE_CHECKING:
 
 
 def allocate(group: h5py.File | h5py.Group, schema: Schema):
-    from opencosmo.io.verify import verify_no_unresolved_maps
-
-    verify_no_unresolved_maps(schema)
     for column_name, column_writer in schema.columns.items():
         group.require_dataset(
             column_name,
@@ -29,9 +26,6 @@ def allocate(group: h5py.File | h5py.Group, schema: Schema):
 
 
 def write_columns(group: h5py.File | h5py.Group, schema: Schema):
-    from opencosmo.io.verify import verify_no_unresolved_maps
-
-    verify_no_unresolved_maps(schema)
     for column_path, column_writer in schema.columns.items():
         group[column_path][:] = column_writer.data
         group[column_path].attrs.update(column_writer.attrs)

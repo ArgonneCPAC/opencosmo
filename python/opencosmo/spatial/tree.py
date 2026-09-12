@@ -277,7 +277,7 @@ class Tree:
         intersects_size = np.concatenate([i[1] for i in intersects])
         return (contains_start, contains_size), (intersects_start, intersects_size)
 
-    def apply_index(self, index: DataIndex, min_counts: int = 100) -> Tree:
+    def apply_index(self, index: DataIndex) -> Tree:
         max_level_starts, max_level_sizes = from_start_size_group(
             self.__columns[f"level_{self.__max_level}"]
         )

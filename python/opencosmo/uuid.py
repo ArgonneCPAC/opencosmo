@@ -36,6 +36,10 @@ def get_path_uuid(path: Path) -> UUID:
     return uuid5(NAMESPACE, str(path))
 
 
+def get_string_uuid(data: str) -> UUID:
+    return uuid5(NAMESPACE, data)
+
+
 def get_dataset_uuid(group: h5py.Group) -> UUID:
     """
     Return the runtime identity of a dataset's /data group.

@@ -539,6 +539,7 @@ def do_idx_update(data: np.ndarray, comm: Optional[MPI.Comm] = None):
     else:
         counts = comm.allgather(n_valid)
         offset = int(np.sum(counts[: comm.Get_rank()]))
+
     result = np.full(len(data), -1, dtype=np.int64)
     result[valid] = np.arange(offset, offset + n_valid)
     return result

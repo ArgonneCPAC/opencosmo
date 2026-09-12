@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .schema import FileEntry, MapCoordinateState
+from .schema import FileEntry
 
 if TYPE_CHECKING:
     from .schema import Schema
@@ -29,11 +29,7 @@ verification.
 
 def verify_structure(
     schema: Schema,
-    *,
-    allow_unresolved_maps: bool = False,
 ):
-    if not allow_unresolved_maps:
-        verify_no_unresolved_maps(schema)
     match schema.type:
         case FileEntry.DATASET:
             return verify_dataset_data(schema)
@@ -52,16 +48,6 @@ def verify_structure(
             verify_dataset_data(schema, has_index=False)
         case _:
             raise ValueError("Unknown file structure!")
-
-
-def verify_no_unresolved_maps(schema: Schema) -> None:
-    """Reject raw-coordinate maps before a schema reaches a generic writer."""
-    if schema.map_coordinates == MapCoordinateState.RAW:
-        raise ValueError(
-            "Unresolved raw-coordinate simulation mapping reached the writer"
-        )
-    for child in schema.children.values():
-        verify_no_unresolved_maps(child)
 
 
 def data_group_length(schema: Schema) -> int:

@@ -158,16 +158,17 @@ def sync_headers(datasets: list[ds.Dataset], redshift_range):
 
 def stack_lightcone_datasets_in_schema(
     datasets: dict[str, list[ds.Dataset]],
-    name: Optional[str],
+    path: str,
     redshift_range: Optional[tuple[float, float]],
     no_stack: bool = False,
 ):
+    name = path.split("/")[-1]
     n_datasets = sum(len(lst) for lst in datasets.values())
     if n_datasets == 1 and get_comm_world() is None:
         dataset_list = next(iter(datasets.values()))
         dataset_name = next(iter(datasets.keys()))
 
-        schema = dataset_list[0].make_schema(name=name)
+        schema = dataset_list[0].make_schema(path=path)
         header = sync_headers(dataset_list, redshift_range)
         schema.children["header"] = header
         return {dataset_name: schema}
@@ -184,7 +185,7 @@ def stack_lightcone_datasets_in_schema(
             get_stacked_lightcone_order([], -1)
             sync_headers(ds_list, None)
             continue
-        schemas = [ds.make_schema(name=name) for ds in ds_list]
+        schemas = [ds.make_schema(path=path) for ds in ds_list]
         index_names = list(schemas[0].children["index"].children.keys())
         index_names.sort()
         max_level = int(index_names[-1][-1])
