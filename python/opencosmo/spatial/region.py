@@ -364,8 +364,8 @@ class BoxRegion:
                 )
                 for i in range(3)
             ]
-        center = ((b[0] + b[1]) / 2 for b in bounds)
-        halfwidth = ((b[1] - b[0]) / 2 for b in bounds)
+        center = tuple((b[0] + b[1]) / 2 for b in bounds)
+        halfwidth = tuple((b[1] - b[0]) / 2 for b in bounds)
         return BoxRegion(center, halfwidth)
 
     def into_base_convention(

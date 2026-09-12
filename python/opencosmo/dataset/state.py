@@ -6,7 +6,6 @@ from copy import copy
 from dataclasses import dataclass
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Generator, Optional
-from uuid import uuid4
 from weakref import finalize
 
 import astropy.units as u
@@ -35,7 +34,11 @@ from opencosmo.units.handler import (
     make_unit_handler_from_unit_strings,
     make_unit_handler_from_units,
 )
-from opencosmo.uuid import get_in_memory_dataset_uuid, get_raw_column_uuid
+from opencosmo.uuid import (
+    get_in_memory_dataset_uuid,
+    get_raw_column_uuid,
+    get_string_uuid,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -345,7 +348,7 @@ def iter_rows(
         raise
 
 
-def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
+def make_schema(state: DatasetState, path: str) -> Schema:
     producers = list(state.producers.values())
     columns = set(state.column_map.keys())
     derived_names = get_derived_column_names(producers, columns)
@@ -362,6 +365,8 @@ def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
     if state.sort_key is not None and state.sort_key[2]:
         column_map.pop(state.sort_key[0])
 
+    name = path.split("/")[-1]
+
     return make_dataset_schema(
         producers,
         state.raw_data_handler,
@@ -372,7 +377,7 @@ def make_schema(state: DatasetState, name: Optional[str] = None) -> Schema:
         state.region,
         state.raw_index,
         derived_data,
-        uuid4(),
+        get_string_uuid(path),
         name,
     )
 

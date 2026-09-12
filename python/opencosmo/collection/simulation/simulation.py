@@ -9,7 +9,6 @@ import numpy as np
 from opencosmo.collection import structure as sc
 from opencosmo.collection.simulation.io import (
     resort_simulation_collection,
-    update_mapping_uuids,
 )
 from opencosmo.column.select import do_multi_dataset_drops, do_multi_dataset_selections
 from opencosmo.dataset import Dataset
@@ -288,7 +287,7 @@ class SimulationCollection:
     def open(cls, targets: list[DatasetTarget], **kwargs) -> Collection | Dataset:
         raise NotImplementedError()
 
-    def make_schema(self) -> Schema:
+    def make_schema(self, path: str) -> Schema:
         children = {}
 
         new_uuids: dict[str, UUID] = {}
@@ -297,7 +296,7 @@ class SimulationCollection:
 
         for name, dataset in self.__datasets.items():
             if isinstance(dataset, DatasetState):
-                children[name] = st.make_schema(dataset)
+                children[name] = st.make_schema(dataset, "/".join([path, name]))
 
                 new_uuids[name] = UUID(
                     cast("str", children[name].children["data"].attributes["main_uuid"])
@@ -305,7 +304,7 @@ class SimulationCollection:
                 indices[name] = dataset.raw_index
                 continue
 
-            children[name] = dataset.make_schema()
+            children[name] = dataset.make_schema(path="/".join([path, name]))
             if isinstance(dataset, sc.StructureCollection):
                 continue
             new_uuids[name] = UUID(
@@ -323,7 +322,6 @@ class SimulationCollection:
             "/",
             FileEntry.SIMULATION_COLLECTION,
             children=children,
-            updater=update_mapping_uuids,
         )
         return resort_simulation_collection(schema)
 

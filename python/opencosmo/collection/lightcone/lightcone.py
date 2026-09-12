@@ -538,7 +538,7 @@ class Lightcone(dict):
         return {k: getattr(v, attribute) for k, v in self.items()}
 
     def make_schema(
-        self, name: str = "", _min_size=100_000, no_stack: bool = False
+        self, path: str, _min_size=100_000, no_stack: bool = False
     ) -> Schema:
         from opencosmo.mpi import get_all_keys
 
@@ -559,7 +559,6 @@ class Lightcone(dict):
         for step in all_steps:
             datasets = output_datasets.get(step, {})
             if len(datasets) == 0:
-                stack_lightcone_datasets_in_schema(datasets, None, None, no_stack)
                 continue
 
             all_datasets = list(chain(*tuple(lst for lst in datasets.values())))
@@ -571,13 +570,14 @@ class Lightcone(dict):
             )
 
             child_schemas = stack_lightcone_datasets_in_schema(
-                datasets, step, zrange, no_stack
+                datasets, "/".join([path, str(step)]), zrange, no_stack
             )
             child_schemas = {
                 f"{step}_{name}": schema for name, schema in child_schemas.items()
             }
             children.update(child_schemas)
 
+        name = path.split("/")[-1]
         return make_schema(name, FileEntry.LIGHTCONE, children=children)
 
     def bound(self, region: Region, select_by: Optional[str] = None):

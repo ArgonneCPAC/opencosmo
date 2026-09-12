@@ -741,9 +741,7 @@ class Dataset:
         )
         return Dataset(new_state)
 
-    def make_schema(
-        self, with_header: bool = True, name: Optional[str] = None
-    ) -> Schema:
+    def make_schema(self, path: str) -> Schema:
         """
         Prep to write the dataset. This should not be called directly for the user.
         The opencosmo.write file writer automatically handles the file context.
@@ -756,7 +754,7 @@ class Dataset:
             The name of the dataset in the file. The default is "data".
 
         """
-        return st.make_schema(self.__state, name)
+        return st.make_schema(self.__state, path)
 
     def with_units(
         self,
